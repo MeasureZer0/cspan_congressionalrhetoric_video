@@ -11,6 +11,7 @@ import pandas as pd  # Pandas for reading CSV labels
 import torch
 from PIL import Image
 from torchvision import transforms
+from tqdm import tqdm
 
 # Define paths to input data:
 # - data_dir: directory containing videos and labels
@@ -240,7 +241,8 @@ def process_and_save_all(
     outputs: List[str] = []
     df = pd.read_csv(label_file)
 
-    for idx, row in df.iterrows():
+    # Use tqdm to show a progress bar over videos
+    for idx, row in tqdm(df.iterrows(), total=len(df), desc="Processing videos"):
         video_name = row.iloc[0]
         # prepare paths
         video_path = os.path.join(data_dir, video_name)
