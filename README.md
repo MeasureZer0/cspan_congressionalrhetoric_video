@@ -21,6 +21,27 @@ flowchart LR
 
 ## Documentation
 
+### Running the code
+
+It is a good practice to use a virtual environment. You can create one using:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # On Windows use `.venv\Scripts\activate`
+```
+
+Then install the required packages:
+
+```bash
+pip install -r requirements.txt
+```
+
+To run the preprocessing script, use:
+
+```bash
+python video_preprocessing.py
+```
+
 ### Preprocessing
 
 Right now it is a simple script that takes every 5th frame from the videos.
