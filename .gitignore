@@ -1,5 +1,6 @@
 data/
-.ipynb_checkpoints
+.ipynb_checkpoint
+__pycache__/
 
 # MacOS
 .DS_Store
