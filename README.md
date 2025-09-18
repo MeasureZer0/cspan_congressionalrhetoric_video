@@ -68,6 +68,15 @@ options:
   --purge               Purge existing output files before processing.
 ```
 
+### Utilities
+
+For easier package uninstallation, you can use the provided `pip-uninstall.py` script. It helps to uninstall packages along with their dependencies that are not required by other packages. Usage:
+
+```bash
+chmod +x scripts/pip-uninstall.py
+./scripts/pip-uninstall.py pkg1 pkg2 ...
+```
+
 ## Sources
 
 - [YuNet model from OpenCV](https://github.com/opencv/opencv_zoo/blob/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx)
