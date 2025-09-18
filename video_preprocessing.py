@@ -15,6 +15,8 @@ from tqdm import tqdm
 
 from preprocessing.extract_frames import extract_frames
 
+import matplotlib.pyplot as plt
+
 # Define paths to input data:
 # - data_dir: directory containing videos and labels
 # - label_file: CSV file with labels (video filename + label)
@@ -26,7 +28,7 @@ models_dir = Path("models")
 face_detector = cv2.FaceDetectorYN.create(
     model=str(models_dir / "face_detection_yunet_2023mar.onnx"),
     config="",
-    input_size=(320, 320),
+    input_size=(768, 576),
     score_threshold=0.9,
     nms_threshold=0.3,
     top_k=5000,
@@ -34,13 +36,6 @@ face_detector = cv2.FaceDetectorYN.create(
 
 
 def _rgb(frame: np.ndarray) -> np.ndarray:
-    """Convert OpenCV BGR frame to RGB for face_recognition / PIL."""
-    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-
-def detect_speakers_face(
-    frame: np.ndarray, detection_size: Optional[int] = 640
-) -> Optional[Tuple[int, int, int, int]]:
     """
     Convert OpenCV BGR frame to RGB for face_recognition / PIL.
     Args:
@@ -48,22 +43,30 @@ def detect_speakers_face(
     Returns:
         np.ndarray: Frame in RGB format.
     """
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+
+def detect_speakers_face(
+    frame: np.ndarray
+) -> Optional[Tuple[int, int, int, int]]:
+    """
+    Detect the most central face in the given video frame using YuNet.
+
+    Args:
+        frame (np.ndarray): Input frame in BGR format.
+            for detection (resized for speed). Default = 640. 
+            If None, detection runs on the original resolution.
+
+    Returns:
+        Optional[Tuple[int, int, int, int]]: Bounding box of the detected face in
+            (top, right, bottom, left) format. 
+            Returns None if no face is found.
+    """
+    # Convert from BGR to RGB
     rgb = _rgb(frame)
     h, w = rgb.shape[:2]
-
-    # Optionally resize for faster detection
-    scale = 1.0
-    if detection_size is not None and max(h, w) > detection_size:
-        scale = detection_size / max(h, w)
-        small_w = max(1, int(round(w * scale)))
-        small_h = max(1, int(round(h * scale)))
-        small = cv2.resize(rgb, (small_w, small_h), interpolation=cv2.INTER_LINEAR)
-        face_detector.setInputSize((small_w, small_h))
-        _, faces = face_detector.detect(small)
-    else:
-        face_detector.setInputSize((w, h))
-        _, faces = face_detector.detect(rgb)
-
+    face_detector.setInputSize((w, h))
+    _, faces = face_detector.detect(rgb)
     if faces is None or len(faces) == 0:
         return None
 
@@ -84,17 +87,12 @@ def detect_speakers_face(
     best_idx = 0
     if len(locations) > 1:
         # Choose the face closest to the image center
-        img_center = np.array(
-            [
-                h * scale / 2 if scale != 1.0 else h / 2,
-                w * scale / 2 if scale != 1.0 else w / 2,
-            ]
-        )
+        img_center = np.array([h / 2, w / 2])
 
         min_dist = float("inf")
         best_idx = 0
         for i, loc in enumerate(locations):
-            t, r, b, left = loc
+            t, r, b, l = loc
             # Compute face center
             face_center = np.array(
                 [
@@ -108,18 +106,8 @@ def detect_speakers_face(
                 min_dist = dist
                 best_idx = i
 
-    # Map back to original coordinates if resized
-    t, r, b, left = locations[best_idx]
-    if scale != 1.0:
-        inv_scale = 1.0 / scale
-        return (
-            int(round(t * inv_scale)),
-            int(round(r * inv_scale)),
-            int(round(b * inv_scale)),
-            int(round(left * inv_scale)),
-        )
-    else:
-        return (t, r, b, left)
+    t,r,b,l = locations[best_idx]
+    return (t, r, b, l)
 
 
 def crop_face(
@@ -172,8 +160,8 @@ def crop_face(
 def frames_to_face_tensors(
     frames: List[np.ndarray],
     size: tuple = (224, 224),
-    detection_size: Optional[int] = 640,
     margin: Optional[float] = 0.0,
+    crop_width_ratio: float = 0.5
 ) -> torch.Tensor:
     """
     Detect the face closest to horizontal center \
@@ -181,7 +169,6 @@ def frames_to_face_tensors(
     Args:
         frames (List[np.ndarray]): List of BGR frames (OpenCV).
         size (tuple): Target size (H, W) for resizing.
-        detection_size (int or None): Resize largest side to this before detection.
         margin (float or None): Margin to add around detected face box.
     Returns:
         torch.Tensor: Tensor of shape (N, C, H, W) for N frames with detected faces.
@@ -189,25 +176,24 @@ def frames_to_face_tensors(
     if not frames:
         return torch.empty((0, 3, size[0], size[1]), dtype=torch.float32)
 
-    transform = transforms.Compose(
-        [
-            transforms.ToPILImage(),
-            transforms.Resize(size),
-            transforms.ToTensor(),
-            # normalization can be added if needed
-        ]
-    )
-
     tensors = []
     for f in frames:
-        loc = detect_speakers_face(f, detection_size=detection_size)
-        face = crop_face(f, loc, margin=margin)
+        h, w = f.shape[:2]
+        new_w = int(w * crop_width_ratio)
+        start = (w - new_w) // 2
+        f_cropped = f[:, start:start + new_w, :]
+        # plt.imshow(f_cropped.transpose((0, 1, 2)))
+        # plt.show()
+        
+        loc = detect_speakers_face(f_cropped)
+        face = crop_face(f_cropped, loc, margin=margin)
         if face is None:
             # skip frames without a detected face
             continue
         # transform expects HWC in uint8
         try:
-            t = transform(face)
+            face_resized = cv2.resize(face, size)
+            t = transforms.ToTensor()(face_resized)
         except Exception:
             # fallback: convert with PIL.Image
             pil = Image.fromarray(face)
@@ -238,7 +224,6 @@ def process_and_save_all(
     out_dir: Path,
     frame_skip: int = 10,
     size: tuple = (224, 224),
-    detection_size: Optional[int] = 640,
     margin: float = 0.0,
     purge: bool = False,
 ) -> List[str]:
@@ -250,7 +235,6 @@ def process_and_save_all(
         out_dir (Path): Directory to save output tensors.
         frame_skip (int): Save only every N-th frame.
         size (tuple): Target size for face tensors.
-        detection_size (int or None): Size for face detection.
         margin (float): Margin to add around detected faces.
         purge (bool): If True, overwrite existing outputs.
     Returns:
@@ -275,7 +259,7 @@ def process_and_save_all(
         print(f"Processing video {idx}: {video_name}")
         frames = extract_frames(path=video_path, frame_skip=frame_skip)
         tensor = frames_to_face_tensors(
-            frames, size=size, detection_size=detection_size, margin=margin
+            frames, size=size, margin=margin
         )
         if tensor.numel() == 0:
             print(f"No faces found for {video_name}; skipping save.")
@@ -318,9 +302,6 @@ if __name__ == "__main__":
         "--size", type=tuple, default=(224, 224), help="Target size for face tensors."
     )
     parser.add_argument(
-        "--detection_size", type=int, default=640, help="Size for face detection."
-    )
-    parser.add_argument(
         "--margin", type=float, default=0.1, help="Margin to add around detected faces."
     )
     parser.add_argument(
@@ -337,7 +318,6 @@ if __name__ == "__main__":
         out_dir=args.out_dir,
         frame_skip=args.frame_skip,
         size=args.size,
-        detection_size=args.detection_size,
         margin=args.margin,
         purge=args.purge,
     )
