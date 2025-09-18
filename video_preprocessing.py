@@ -15,8 +15,6 @@ from tqdm import tqdm
 
 from preprocessing.extract_frames import extract_frames
 
-import matplotlib.pyplot as plt
-
 # Define paths to input data:
 # - data_dir: directory containing videos and labels
 # - label_file: CSV file with labels (video filename + label)
@@ -92,7 +90,7 @@ def detect_speakers_face(
         min_dist = float("inf")
         best_idx = 0
         for i, loc in enumerate(locations):
-            t, r, b, l = loc
+            t, r, b, left = loc
             # Compute face center
             face_center = np.array(
                 [
@@ -106,8 +104,8 @@ def detect_speakers_face(
                 min_dist = dist
                 best_idx = i
 
-    t,r,b,l = locations[best_idx]
-    return (t, r, b, l)
+    t, r, b, left = locations[best_idx]
+    return (t, r, b, left)
 
 
 def crop_face(
@@ -182,8 +180,6 @@ def frames_to_face_tensors(
         new_w = int(w * crop_width_ratio)
         start = (w - new_w) // 2
         f_cropped = f[:, start:start + new_w, :]
-        # plt.imshow(f_cropped.transpose((0, 1, 2)))
-        # plt.show()
         
         loc = detect_speakers_face(f_cropped)
         face = crop_face(f_cropped, loc, margin=margin)
