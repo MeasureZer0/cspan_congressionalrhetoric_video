@@ -44,20 +44,18 @@ def _rgb(frame: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
 
-def detect_speakers_face(
-    frame: np.ndarray
-) -> Optional[Tuple[int, int, int, int]]:
+def detect_speakers_face(frame: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
     """
     Detect the most central face in the given video frame using YuNet.
 
     Args:
         frame (np.ndarray): Input frame in BGR format.
-            for detection (resized for speed). Default = 640. 
+            for detection (resized for speed). Default = 640.
             If None, detection runs on the original resolution.
 
     Returns:
         Optional[Tuple[int, int, int, int]]: Bounding box of the detected face in
-            (top, right, bottom, left) format. 
+            (top, right, bottom, left) format.
             Returns None if no face is found.
     """
     # Convert from BGR to RGB
@@ -159,7 +157,7 @@ def frames_to_face_tensors(
     frames: List[np.ndarray],
     size: tuple = (224, 224),
     margin: Optional[float] = 0.0,
-    crop_width_ratio: float = 0.5
+    crop_width_ratio: float = 0.5,
 ) -> torch.Tensor:
     """
     Detect the face closest to horizontal center \
@@ -176,11 +174,11 @@ def frames_to_face_tensors(
 
     tensors = []
     for f in frames:
-        h, w = f.shape[:2]
+        _, w = f.shape[:2]
         new_w = int(w * crop_width_ratio)
         start = (w - new_w) // 2
-        f_cropped = f[:, start:start + new_w, :]
-        
+        f_cropped = f[:, start : start + new_w, :]
+
         loc = detect_speakers_face(f_cropped)
         face = crop_face(f_cropped, loc, margin=margin)
         if face is None:
@@ -254,9 +252,8 @@ def process_and_save_all(
             continue
         print(f"Processing video {idx}: {video_name}")
         frames = extract_frames(path=video_path, frame_skip=frame_skip)
-        tensor = frames_to_face_tensors(
-            frames, size=size, margin=margin
-        )
+        tensor = frames_to_face_tensors(frames, size=size, margin=margin)
+
         if tensor.numel() == 0:
             print(f"No faces found for {video_name}; skipping save.")
             continue

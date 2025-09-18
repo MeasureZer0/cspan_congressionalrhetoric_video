@@ -2,7 +2,9 @@ import cv2
 from numpy import ndarray
 
 
-def extract_frames(path: str, frame_skip: int = 10, skip_start: int = 5, skip_end: int = 5) -> list[ndarray]:
+def extract_frames(
+    path: str, frame_skip: int = 10, skip_start: int = 60, skip_end: int = 60
+) -> list[ndarray]:
     """
     Extract frames from a VideoCapture object.
 
@@ -29,19 +31,19 @@ def extract_frames(path: str, frame_skip: int = 10, skip_start: int = 5, skip_en
 
     # Total number of frames in the video
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    frames = [] # List to store selected frames
+
+    frames = []  # List to store selected frames
     counter = 0  # Counter for the current frame index
     while True:
         # - cap.read() returns:
         #     ret: Boolean indicating if a frame was read successfully
         #     frame: the actual frame image
         ret, frame = cap.read()
-        
+
         # Skip the first "skip_start" frames and last "skip_end" frames
         if counter < skip_start or counter >= total_frames - skip_end:
             counter += 1
-        
+
         # If no frame is returned:
         # - End of the video has been reached, OR
         # - An error occurred while reading
