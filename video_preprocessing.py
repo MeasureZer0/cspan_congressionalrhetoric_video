@@ -1,132 +1,316 @@
 """Video Preprocessing Module"""
 
-import os  # OS for safe file and directory path operations
+import argparse
+import os
+from pathlib import Path
+from typing import List, Optional, Tuple
 
-import cv2  # OpenCV for handling video files (reading frames, opening videos)
-import numpy as np  # NumPy for storing frames as numpy arrays
-import pandas as pd  # Pandas for reading and handling CSV files in table format
+import cv2  # OpenCV for video processing
+import numpy as np  # NumPy for storing frames as arrays
+import pandas as pd  # Pandas for reading CSV labels
+import torch
+from PIL import Image
+from torchvision import transforms
+from tqdm import tqdm
+
+from preprocessing.extract_frames import extract_frames
 
 # Define paths to input data:
 # - data_dir: directory containing videos and labels
 # - label_file: CSV file with labels (video filename + label)
-data_dir = "data/sample_video"
-label_file = "data/sample_video/labels.csv"
+data_dir = Path("data/sample_video")
+label_file = Path(data_dir / "labels.csv")
+models_dir = Path("models")
+
+# Initialise YuNet face detector
+face_detector = cv2.FaceDetectorYN.create(
+    model=str(models_dir / "face_detection_yunet_2023mar.onnx"),
+    config="",
+    input_size=(768, 576),
+    score_threshold=0.9,
+    nms_threshold=0.3,
+    top_k=5000,
+)
 
 
-def extract_frames(cap: cv2.VideoCapture, frame_skip: int = 5) -> list:
+def _rgb(frame: np.ndarray) -> np.ndarray:
     """
-    Extract frames from a VideoCapture object.
-
-    Parameters
-    ----------
-    cap : cv2.VideoCapture
-        OpenCV VideoCapture object for the video file.
-    frame_skip : int, default=5
-        Save only every N-th frame (sampling frequency).
-
-    Returns
-    -------
-    frames : list
-        A list of extracted frames (each frame as a NumPy array).
+    Convert OpenCV BGR frame to RGB for face_recognition / PIL.
+    Args:
+        frame (np.ndarray): Input frame in BGR format.
+    Returns:
+        np.ndarray: Frame in RGB format.
     """
-    frames = []
-    count = 0  # frame counter
-    while True:
-        # - cap.read() returns:
-        #     ret: Boolean indicating if a frame was read successfully
-        #     frame: the actual frame image
-        ret, frame = cap.read()
-
-        # If no frame is returned:
-        # - End of the video has been reached, OR
-        # - An error occurred while reading
-        if not ret:
-            print("End of video or error occurred.")
-            break
-
-        # Store only every N-th frame
-        if count % frame_skip == 0:
-            frames.append(frame)
-
-        # Debugging visualization:
-        # Uncomment the code below to display video frames while processing
-        # cv2.imshow("Video Frame", frame)
-        # if cv2.waitKey(1) & 0xFF == ord('q'):
-        #     break
-
-        # Increment frame counter
-        count += 1
-
-    # Cleanup: release system resources after processing
-    # - cap.release(): closes the video file
-    # - cv2.destroyAllWindows():
-    #   closes any OpenCV windows (uncomment during visualization)
-    cap.release()
-    # cv2.destroyAllWindows()
-
-    # Print how many frames were captured
-    print(f"Frames captured: {len(frames)}")
-    return frames
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
 
-def load_data(data_dir: str, label_file: str) -> tuple:
+def detect_speakers_face(frame: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
     """
-    Load video data and corresponding labels.
+    Detect the most central face in the given video frame using YuNet.
 
-    Parameters
-    ----------
-    data_dir : str
-        Path to the directory with video files.
-    label_file : str
-        Path to the CSV file with labels.
+    Args:
+        frame (np.ndarray): Input frame in BGR format.
+            for detection (resized for speed). Default = 640.
+            If None, detection runs on the original resolution.
 
-    Returns
-    -------
-    X : list
-        A list of frame sequences for each video.
-        Each element is a list of frames (NumPy arrays).
-    y : list
-        A list of labels corresponding to the videos.
+    Returns:
+        Optional[Tuple[int, int, int, int]]: Bounding box of the detected face in
+            (top, right, bottom, left) format.
+            Returns None if no face is found.
     """
-    # Load the label file into a Pandas DataFrame
-    data = pd.read_csv(label_file)
+    # Convert from BGR to RGB
+    rgb = _rgb(frame)
+    h, w = rgb.shape[:2]
+    face_detector.setInputSize((w, h))
+    _, faces = face_detector.detect(rgb)
+    if faces is None or len(faces) == 0:
+        return None
 
-    X, y = [], []
+    # Convert detected faces to bounding boxes
+    locations = []
+    for face in faces:
+        # Ensure face is an array, not a scalar
+        if isinstance(face, (np.ndarray, list)):
+            box = np.array(face[0:4]).astype(np.uint32)
+            top = int(round(box[1]))
+            right = int(round(box[0] + box[2]))
+            bottom = int(round(box[1] + box[3]))
+            left = int(round(box[0]))
+            locations.append((top, right, bottom, left))
+    if not locations:
+        return None
 
-    # Iterate through each row in the CSV file
-    for i, row in data.iterrows():
-        video_name = row.iloc[0]  # video filename from CSV
-        label = row.iloc[1]  # video label from CSV
+    best_idx = 0
+    if len(locations) > 1:
+        # Choose the face closest to the image center
+        img_center = np.array([h / 2, w / 2])
 
-        # Construct the video path
+        min_dist = float("inf")
+        best_idx = 0
+        for i, loc in enumerate(locations):
+            t, r, b, left = loc
+            # Compute face center
+            face_center = np.array(
+                [
+                    (t + b) / 2,
+                    (left + r) / 2,
+                ]
+            )
+            dist = np.linalg.norm(face_center - img_center)
+
+            if dist < min_dist:
+                min_dist = dist
+                best_idx = i
+
+    t, r, b, left = locations[best_idx]
+    return (t, r, b, left)
+
+
+def crop_face(
+    frame: np.ndarray,
+    location: Optional[Tuple[int, int, int, int]],
+    margin: Optional[float],
+) -> Optional[np.ndarray]:
+    """
+    Crop a face from frame given a (top, right, bottom, left) tuple.
+    Optionally expand the bounding box by a margin.
+    Args:
+        frame (np.ndarray): Input frame in BGR format.
+        location (tuple or None): (top, right, bottom, left) bounding box.
+        margin (float or None): Margin to add around the box.
+    Returns:
+        np.ndarray or None: Cropped face in RGB, or None if invalid.
+    """
+    if location is None:
+        return None
+    top, right, bottom, left = location
+    rgb = _rgb(frame)
+    # clamp coordinates
+    h, w = rgb.shape[:2]
+
+    # optionally expand box by margin (fraction of box size). margin may be
+    # a float (fraction) or an absolute pixel value (int); interpret >0 and
+    # <1 as fraction.
+    if margin:
+        box_h = bottom - top
+        box_w = right - left
+        if margin < 1.0:
+            pad_h = int(round(box_h * margin))
+            pad_w = int(round(box_w * margin))
+        else:
+            pad_h = int(round(margin))
+            pad_w = int(round(margin))
+        top -= pad_h
+        bottom += pad_h
+        left -= pad_w
+        right += pad_w
+    top = max(0, top)
+    left = max(0, left)
+    bottom = min(h, bottom)
+    right = min(w, right)
+    if bottom <= top or right <= left:
+        return None
+    return rgb[top:bottom, left:right]
+
+
+def frames_to_face_tensors(
+    frames: List[np.ndarray],
+    size: tuple = (224, 224),
+    margin: Optional[float] = 0.0,
+    crop_width_ratio: float = 0.5,
+) -> torch.Tensor:
+    """
+    Detect the face closest to horizontal center \
+    in each frame, crop, resize, and convert to a tensor.
+    Args:
+        frames (List[np.ndarray]): List of BGR frames (OpenCV).
+        size (tuple): Target size (H, W) for resizing.
+        margin (float or None): Margin to add around detected face box.
+    Returns:
+        torch.Tensor: Tensor of shape (N, C, H, W) for N frames with detected faces.
+    """
+    if not frames:
+        return torch.empty((0, 3, size[0], size[1]), dtype=torch.float32)
+
+    tensors = []
+    for f in frames:
+        _, w = f.shape[:2]
+        new_w = int(w * crop_width_ratio)
+        start = (w - new_w) // 2
+        f_cropped = f[:, start : start + new_w, :]
+
+        loc = detect_speakers_face(f_cropped)
+        face = crop_face(f_cropped, loc, margin=margin)
+        if face is None:
+            # skip frames without a detected face
+            continue
+        # transform expects HWC in uint8
+        try:
+            face_resized = cv2.resize(face, size)
+            t = transforms.ToTensor()(face_resized)
+        except Exception:
+            # fallback: convert with PIL.Image
+            pil = Image.fromarray(face)
+            t = transforms.ToTensor()(pil)
+        tensors.append(t)
+
+    if not tensors:
+        return torch.empty((0, 3, size[0], size[1]), dtype=torch.float32)
+
+    return torch.stack(tensors)
+
+
+def save_tensor(tensor: torch.Tensor, out_path: str) -> None:
+    """
+    Save tensor to disk using torch.save. Creates parent dir if needed.
+    Args:
+        tensor (torch.Tensor): Tensor to save.
+        out_path (str): Output file path.
+    """
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(tensor, str(out))
+
+
+def process_and_save_all(
+    data_dir: Path,
+    label_file: Path,
+    out_dir: Path,
+    frame_skip: int = 10,
+    size: tuple = (224, 224),
+    margin: float = 0.0,
+    purge: bool = False,
+) -> List[str]:
+    """
+    Load videos, extract faces, convert to tensors and save per-video tensors.
+    Args:
+        data_dir (Path): Directory containing video files.
+        label_file (Path): CSV file with video labels.
+        out_dir (Path): Directory to save output tensors.
+        frame_skip (int): Save only every N-th frame.
+        size (tuple): Target size for face tensors.
+        margin (float): Margin to add around detected faces.
+        purge (bool): If True, overwrite existing outputs.
+    Returns:
+        List[str]: List of output file paths (one per video that produced faces).
+    """
+    outputs: List[str] = []
+    df = pd.read_csv(label_file)
+
+    # Use tqdm to show a progress bar over videos
+    for idx, row in tqdm(df.iterrows(), total=len(df), desc="Processing videos"):
+        video_name = row.iloc[0]
+        # prepare paths
         video_path = os.path.join(data_dir, video_name)
+        stem = Path(video_name).stem
+        out_path = Path(out_dir) / f"{stem}_faces.pt"
 
-        # Open the video file using OpenCV's VideoCapture
-        # VideoCapture creates a video object from which we can read frames
-        cap = cv2.VideoCapture(video_path)
+        # skip if not purging and already processed
+        if not purge and out_path.exists():
+            print(f"Skipping {video_name}: output already exists -> {out_path}")
+            outputs.append(str(out_path))
+            continue
+        print(f"Processing video {idx}: {video_name}")
+        frames = extract_frames(path=video_path, frame_skip=frame_skip)
+        tensor = frames_to_face_tensors(frames, size=size, margin=margin)
 
-        # Verify that the video file was successfully opened
-        # cap.isOpened() returns True if the video is ready to process
-        # If it fails, print an error and exit the script
-        if not cap.isOpened():
-            print(f"Error: Could not open video file {i}.")
+        if tensor.numel() == 0:
+            print(f"No faces found for {video_name}; skipping save.")
             continue
 
-        print(f"Video {i} file opened successfully!")
+        # ensure output directory exists and save
+        save_tensor(tensor, str(out_path))
+        outputs.append(str(out_path))
+        print(f"Saved {tensor.shape} for {video_name} -> {out_path}")
 
-        frames = extract_frames(cap)
-        # Save data only if frames were successfully extracted
-        if frames:
-            X.append(frames)
-            y.append(label)
-    return X, y
+    return outputs
 
 
-# Load the dataset
-X, y = load_data(data_dir, label_file)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Process videos to extract face tensors."
+    )
+    parser.add_argument(
+        "--data_dir",
+        type=Path,
+        default=Path("data/sample_video"),
+        help="Path to the directory containing video files.",
+    )
+    parser.add_argument(
+        "--label_file",
+        type=Path,
+        default=Path("data/sample_video/labels.csv"),
+        help="Path to the CSV file containing video labels.",
+    )
+    parser.add_argument(
+        "--out_dir",
+        type=Path,
+        default=Path("data/processed_faces"),
+        help="Path to the directory where output tensors will be saved.",
+    )
+    parser.add_argument(
+        "--frame_skip", type=int, default=10, help="Save only every N-th frame."
+    )
+    parser.add_argument(
+        "--size", type=tuple, default=(224, 224), help="Target size for face tensors."
+    )
+    parser.add_argument(
+        "--margin", type=float, default=0.1, help="Margin to add around detected faces."
+    )
+    parser.add_argument(
+        "--purge",
+        action="store_true",
+        help="Purge existing output files before processing.",
+    )
 
-# Convert to NumPy arrays
-X = np.array(X, dtype=object)
-y = np.array(y)
+    args = parser.parse_args()
 
-print(f"X shape: {X.shape}, y shape: {y.shape}")
+    process_and_save_all(
+        data_dir=args.data_dir,
+        label_file=args.label_file,
+        out_dir=args.out_dir,
+        frame_skip=args.frame_skip,
+        size=args.size,
+        margin=args.margin,
+        purge=args.purge,
+    )
