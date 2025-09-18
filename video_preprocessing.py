@@ -176,7 +176,8 @@ def frames_to_face_tensors(
     margin: Optional[float] = 0.0,
 ) -> torch.Tensor:
     """
-    Detect the face closest to horizontal center in each frame, crop, resize, and convert to a tensor.
+    Detect the face closest to horizontal center \
+    in each frame, crop, resize, and convert to a tensor.
     Args:
         frames (List[np.ndarray]): List of BGR frames (OpenCV).
         size (tuple): Target size (H, W) for resizing.
