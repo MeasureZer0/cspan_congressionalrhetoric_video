@@ -1,6 +1,7 @@
 """Video Preprocessing Module"""
 
 import argparse
+import concurrent.futures
 import os
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -158,7 +159,7 @@ def frames_to_face_tensors(
     size: tuple = (224, 224),
     margin: Optional[float] = 0.0,
     crop_width_ratio: float = 0.5,
-) -> torch.Tensor:
+) -> List[torch.Tensor]:
     """
     Detect the face closest to horizontal center \
     in each frame, crop, resize, and convert to a tensor.
@@ -170,7 +171,7 @@ def frames_to_face_tensors(
         torch.Tensor: Tensor of shape (N, C, H, W) for N frames with detected faces.
     """
     if not frames:
-        return torch.empty((0, 3, size[0], size[1]), dtype=torch.float32)
+        return [torch.empty((0, 3, size[0], size[1]), dtype=torch.float32)]
 
     tensors = []
     for f in frames:
@@ -194,9 +195,21 @@ def frames_to_face_tensors(
             t = transforms.ToTensor()(pil)
         tensors.append(t)
 
+    return tensors
+
+
+def stack_tensors(
+    tensors: List[torch.Tensor], size: tuple = (224, 224)
+) -> torch.Tensor:
+    """
+    Stack a list of tensors into a single tensor along the first dimension.
+    Args:
+        tensors (List[torch.Tensor]): List of tensors to stack.
+    Returns:
+        torch.Tensor: Stacked tensor.
+    """
     if not tensors:
         return torch.empty((0, 3, size[0], size[1]), dtype=torch.float32)
-
     return torch.stack(tensors)
 
 
@@ -212,7 +225,33 @@ def save_tensor(tensor: torch.Tensor, out_path: str) -> None:
     torch.save(tensor, str(out))
 
 
-def process_and_save_all(
+def process_single_video(
+    video_path: str,
+    out_path: Path,
+    frame_skip: int,
+    size: tuple,
+    margin: float,
+    purge: bool,
+) -> Optional[str]:
+    """
+    Worker function: process one video, extract faces, save tensor.
+    Returns output path if successful, None otherwise.
+    """
+    if not purge and out_path.exists():
+        print(f"Skipping {video_path}: output already exists -> {out_path}")
+        return str(out_path)
+    frames = extract_frames(path=video_path, frame_skip=frame_skip)
+    tensors = frames_to_face_tensors(frames, size=size, margin=margin)
+    tensor = stack_tensors(tensors, size=size)
+    if tensor.numel() == 0:
+        print(f"No faces found for {video_path}; skipping save.")
+        return None
+    save_tensor(tensor, str(out_path))
+    print(f"Saved {tensor.shape} for {video_path} -> {out_path}")
+    return str(out_path)
+
+
+def process_videos_in_parallel(
     data_dir: Path,
     label_file: Path,
     out_dir: Path,
@@ -220,49 +259,36 @@ def process_and_save_all(
     size: tuple = (224, 224),
     margin: float = 0.0,
     purge: bool = False,
-) -> List[str]:
+) -> list[str]:
     """
-    Load videos, extract faces, convert to tensors and save per-video tensors.
-    Args:
-        data_dir (Path): Directory containing video files.
-        label_file (Path): CSV file with video labels.
-        out_dir (Path): Directory to save output tensors.
-        frame_skip (int): Save only every N-th frame.
-        size (tuple): Target size for face tensors.
-        margin (float): Margin to add around detected faces.
-        purge (bool): If True, overwrite existing outputs.
-    Returns:
-        List[str]: List of output file paths (one per video that produced faces).
+    Process all videos in parallel, each worker processes one video.
+    Shows a progress bar that updates as each worker finishes.
     """
-    outputs: List[str] = []
     df = pd.read_csv(label_file)
-
-    # Use tqdm to show a progress bar over videos
-    for idx, row in tqdm(df.iterrows(), total=len(df), desc="Processing videos"):
+    jobs = []
+    for _, row in df.iterrows():
         video_name = row.iloc[0]
-        # prepare paths
         video_path = os.path.join(data_dir, video_name)
         stem = Path(video_name).stem
         out_path = Path(out_dir) / f"{stem}_faces.pt"
+        jobs.append((video_path, out_path, frame_skip, size, margin, purge))
 
-        # skip if not purging and already processed
-        if not purge and out_path.exists():
-            print(f"Skipping {video_name}: output already exists -> {out_path}")
-            outputs.append(str(out_path))
-            continue
-        print(f"Processing video {idx}: {video_name}")
-        frames = extract_frames(path=video_path, frame_skip=frame_skip)
-        tensor = frames_to_face_tensors(frames, size=size, margin=margin)
-
-        if tensor.numel() == 0:
-            print(f"No faces found for {video_name}; skipping save.")
-            continue
-
-        # ensure output directory exists and save
-        save_tensor(tensor, str(out_path))
-        outputs.append(str(out_path))
-        print(f"Saved {tensor.shape} for {video_name} -> {out_path}")
-
+    # Use as many workers as CPU cores if possible, but not more than jobs
+    max_workers = min(os.cpu_count() or 4, len(jobs))
+    print(f"Processing {len(jobs)} videos with {max_workers} workers...")
+    outputs: List[str] = []
+    # Use ProcessPoolExecutor to distribute the jobs to all workers
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # Start all the jobs, executor.submit returns a future
+        futures = [executor.submit(process_single_video, *job) for job in jobs]
+        with tqdm(total=len(futures), desc="Processing videos") as pbar:
+            # The as_completed iterator yields futures as they complete
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                if result is not None:
+                    outputs.append(result)
+                # Update the progress bar upon each completion
+                pbar.update(1)
     return outputs
 
 
@@ -305,7 +331,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    process_and_save_all(
+    process_videos_in_parallel(
         data_dir=args.data_dir,
         label_file=args.label_file,
         out_dir=args.out_dir,
