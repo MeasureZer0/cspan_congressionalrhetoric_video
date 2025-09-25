@@ -6,8 +6,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-# Define transform type: accept plain callables (functions, lambdas,
-# torchvision.transforms.Compose, etc.).
+# Define transform type
 Transform = Optional[Callable[[Any], Any]]
 
 
@@ -24,27 +23,66 @@ class FacesFramesDataset(Dataset):
         transform: Transform = None,
         target_transform: Transform = None,
     ) -> None:
+        """
+        Args:
+            csv_file (Path): Path to the CSV file with labels.
+            img_dir (Path): Directory with preprocessed .pt face tensors.
+            transform (callable, optional): Optional transform to apply to face tensors.
+            target_transform (callable, optional): Optional transform to apply to labels.
+        """
+        # Load CSV with labels
         self.csv_file = pd.read_csv(csv_file)
+
+        # Directory containing preprocessed face tensors
         self.img_dir = img_dir
+
+        # Optional transformations for input and target
         self.transform = transform
         self.target_transform = target_transform
 
+        # Mapping string labels to integer classes
+        # Needed because models expect numeric labels
+        self.classes = {"negative": 0, "neutral": 1, "positive": 2}
+
     def __len__(self) -> int:
+        # Return the total number of samples in the dataset
         return len(self.csv_file)
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, Any]:
-        # {Video name without extension}_faces.pt
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Load a single sample (faces tensor and label) given an index.
+
+        Args:
+            idx (int): Index of the sample to fetch.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: faces tensor and label tensor
+        """
+        # Extract the stem (filename without extension) from CSV
         stem = Path(str(self.csv_file.iloc[idx, 0])).stem
+
+        # Construct the full path to the .pt file
         face_path = os.path.join(self.img_dir, f"{stem}_faces.pt")
 
-        # Load the frames tensor and label
+        # Load the preprocessed frames tensor
         faces = torch.load(face_path)
-        label = self.csv_file.iloc[idx, 1]
 
-        # Apply transformations if any
+        # Get the label string from CSV
+        label_str = self.csv_file.iloc[idx, 1]
+
+        # Convert string label to integer using self.classes mapping
+        label = self.classes[label_str]
+
+        # Convert label to a tensor
+        label = torch.tensor(label, dtype=torch.long)
+
+        # Apply optional transformations to faces tensor
         if self.transform:
             faces = self.transform(faces)
+
+        # Apply optional transformations to label tensor
         if self.target_transform:
             label = self.target_transform(label)
 
+        # Return faces tensor and label tensor
         return faces, label
