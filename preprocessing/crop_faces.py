@@ -10,18 +10,18 @@ import cv2  # OpenCV for video processing
 import numpy as np  # NumPy for storing frames as arrays
 import pandas as pd  # Pandas for reading CSV labels
 import torch
+from extract_frames import extract_frames
 from PIL import Image
 from torchvision import transforms
 from tqdm import tqdm
 
-from preprocessing.extract_frames import extract_frames
-
 # Define paths to input data:
 # - data_dir: directory containing videos and labels
 # - label_file: CSV file with labels (video filename + label)
-data_dir = Path("data/sample_video")
+data_dir = Path("../data")
+raw_videos_dir = Path(data_dir / "raw_videos")
 label_file = Path(data_dir / "labels.csv")
-models_dir = Path("models")
+models_dir = Path(data_dir / "weights")
 
 # Initialise YuNet face detector
 face_detector = cv2.FaceDetectorYN.create(
@@ -299,19 +299,19 @@ if __name__ == "__main__":
     parser.add_argument(
         "--data_dir",
         type=Path,
-        default=Path("data/sample_video"),
+        default=Path("../data/raw_videos"),
         help="Path to the directory containing video files.",
     )
     parser.add_argument(
         "--label_file",
         type=Path,
-        default=Path("data/sample_video/labels.csv"),
+        default=Path("../data/labels.csv"),
         help="Path to the CSV file containing video labels.",
     )
     parser.add_argument(
         "--out_dir",
         type=Path,
-        default=Path("data/processed_faces"),
+        default=Path("../data/faces"),
         help="Path to the directory where output tensors will be saved.",
     )
     parser.add_argument(
