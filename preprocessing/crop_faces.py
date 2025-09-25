@@ -15,13 +15,22 @@ from PIL import Image
 from torchvision import transforms
 from tqdm import tqdm
 
-# Define paths to input data:
-# - data_dir: directory containing videos and labels
-# - label_file: CSV file with labels (video filename + label)
-data_dir = Path("../data")
-raw_videos_dir = Path(data_dir / "raw_videos")
-label_file = Path(data_dir / "labels.csv")
-models_dir = Path(data_dir / "weights")
+# Define paths to input data relative to this file
+script_dir = Path(__file__).resolve().parent
+project_root = script_dir.parent
+data_dir = project_root / "data"
+raw_videos_dir = data_dir / "raw_videos"
+label_file = data_dir / "labels.csv"
+models_dir = data_dir / "weights"
+
+# Assert all required files exist
+assert (label_file).exists(), f"Label file not found: {label_file}"
+assert raw_videos_dir.exists(), f"Raw videos directory not found: {raw_videos_dir}"
+
+assert (models_dir / "face_detection_yunet_2023mar.onnx").exists(), (
+    f"Model file not found: {models_dir / 'face_detection_yunet_2023mar.onnx'}. "
+    "Please run scripts/download-weights.py to download the model weights."
+)
 
 # Initialise YuNet face detector
 face_detector = cv2.FaceDetectorYN.create(
@@ -299,19 +308,19 @@ if __name__ == "__main__":
     parser.add_argument(
         "--data_dir",
         type=Path,
-        default=Path("../data/raw_videos"),
+        default=raw_videos_dir,
         help="Path to the directory containing video files.",
     )
     parser.add_argument(
         "--label_file",
         type=Path,
-        default=Path("../data/labels.csv"),
+        default=label_file,
         help="Path to the CSV file containing video labels.",
     )
     parser.add_argument(
         "--out_dir",
         type=Path,
-        default=Path("../data/faces"),
+        default=data_dir / "faces",
         help="Path to the directory where output tensors will be saved.",
     )
     parser.add_argument(
