@@ -1,5 +1,4 @@
 data/
-notebooks/
 **.ipynb_checkpoints**
 __pycache__/
 Viz.ipynb

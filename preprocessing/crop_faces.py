@@ -10,11 +10,10 @@ import cv2  # OpenCV for video processing
 import numpy as np  # NumPy for storing frames as arrays
 import pandas as pd  # Pandas for reading CSV labels
 import torch
+from extract_frames import extract_frames
 from PIL import Image
 from torchvision import transforms
 from tqdm import tqdm
-
-from extract_frames import extract_frames
 
 # Define paths to input data:
 # - data_dir: directory containing videos and labels
