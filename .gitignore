@@ -1,7 +1,8 @@
 data/
 **.ipynb_checkpoints**
 __pycache__/
-Viz.ipynb
+
+notebooks/viz_faces.ipynb
 
 
 # MacOS
