@@ -70,6 +70,17 @@ options:
 
 ### Utilities
 
+#### download-weights.py
+
+The `download-weights.py` script downloads the required model weights for the project. It saves the weights in the `data/weights` directory. To run the script, use:
+
+```bash
+chmod +x scripts/download-weights.py
+./scripts/download-weights.py
+```
+
+#### pip-uninstall.py
+
 For easier package uninstallation, you can use the provided `pip-uninstall.py` script. It helps to uninstall packages along with their dependencies that are not required by other packages. Usage:
 
 ```bash
