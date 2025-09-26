@@ -28,7 +28,7 @@ class FacesFramesDataset(Dataset):
             csv_file (Path): Path to the CSV file with labels.
             img_dir (Path): Directory with preprocessed .pt face tensors.
             transform (callable, optional): Optional transform to apply to face tensors.
-            target_transform (callable, optional): Optional transform to apply to labels.
+            target_transform (callable, optional): Optional transform applied to labels.
         """
         # Load CSV with labels
         self.csv_file = pd.read_csv(csv_file)
@@ -68,7 +68,7 @@ class FacesFramesDataset(Dataset):
         faces = torch.load(face_path)
 
         # Get the label string from CSV
-        label_str = self.csv_file.iloc[idx, 1]
+        label_str = str(self.csv_file.iloc[idx, 1]).strip()
 
         # Convert string label to integer using self.classes mapping
         label = self.classes[label_str]
