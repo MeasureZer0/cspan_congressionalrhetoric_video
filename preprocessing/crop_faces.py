@@ -15,6 +15,62 @@ from PIL import Image
 from torchvision import transforms
 from tqdm import tqdm
 
+
+def check_gpu_availability() -> Tuple[bool, bool]:
+    """Check if GPU is available for PyTorch and OpenCV"""
+    torch_gpu = torch.cuda.is_available()
+    opencv_gpu = cv2.cuda.getCudaEnabledDeviceCount() > 0
+    return torch_gpu, opencv_gpu
+
+
+def create_face_detector_with_gpu(model_path: str, use_gpu: bool = True) -> Tuple:
+    """
+    Create face detector with GPU support if available.
+
+    Args:
+        model_path (str): Path to the ONNX model file
+        use_gpu (bool): Whether to try using GPU acceleration
+
+    Returns:
+        tuple: (detector, backend_info)
+    """
+    _, opencv_gpu = check_gpu_availability()
+
+    if use_gpu and opencv_gpu:
+        try:
+            # Try to create detector with CUDA backend
+            detector = cv2.FaceDetectorYN.create(
+                model=model_path,
+                config="",
+                input_size=(768, 576),
+                score_threshold=0.9,
+                nms_threshold=0.3,
+                top_k=5000,
+                backend_id=cv2.dnn.DNN_BACKEND_CUDA,
+                target_id=cv2.dnn.DNN_TARGET_CUDA,
+            )
+            print("Face detector initialized with CUDA backend")
+            return detector, "CUDA"
+        except Exception as e:
+            print(f"CUDA backend failed ({e}), falling back to CPU")
+
+    # Fallback to CPU
+    detector = cv2.FaceDetectorYN.create(
+        model=model_path,
+        config="",
+        input_size=(768, 576),
+        score_threshold=0.9,
+        nms_threshold=0.3,
+        top_k=5000,
+    )
+    backend = "CPU"
+    if not use_gpu:
+        print("Face detector initialized with CPU backend (GPU disabled)")
+    else:
+        print("Face detector initialized with CPU backend (GPU not available)")
+    return detector, backend
+
+
 # Define paths to input data relative to this file
 script_dir = Path(__file__).resolve().parent
 project_root = script_dir.parent
@@ -30,16 +86,6 @@ assert raw_videos_dir.exists(), f"Raw videos directory not found: {raw_videos_di
 assert (models_dir / "face_detection_yunet_2023mar.onnx").exists(), (
     f"Model file not found: {models_dir / 'face_detection_yunet_2023mar.onnx'}. "
     "Please run scripts/download-weights.py to download the model weights."
-)
-
-# Initialise YuNet face detector
-face_detector = cv2.FaceDetectorYN.create(
-    model=str(models_dir / "face_detection_yunet_2023mar.onnx"),
-    config="",
-    input_size=(768, 576),
-    score_threshold=0.9,
-    nms_threshold=0.3,
-    top_k=5000,
 )
 
 
@@ -69,6 +115,11 @@ def detect_speakers_face(frame: np.ndarray) -> Optional[Tuple[int, int, int, int
             Returns None if no face is found.
     """
     # Convert from BGR to RGB
+    # Initialize YuNet face detector with GPU support if available
+    face_detector, _ = create_face_detector_with_gpu(
+        str(models_dir / "face_detection_yunet_2023mar.onnx"), use_gpu=True
+    )
+
     rgb = _rgb(frame)
     h, w = rgb.shape[:2]
     face_detector.setInputSize((w, h))
