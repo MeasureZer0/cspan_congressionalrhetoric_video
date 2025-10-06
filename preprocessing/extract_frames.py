@@ -3,7 +3,7 @@ from numpy import ndarray
 
 
 def extract_frames(
-    path: str, frame_skip: int = 10, skip_start: int = 60, skip_end: int = 60
+    path: str, frame_skip: int = 30, skip_start: int = 150, skip_end: int = 150
 ) -> list[ndarray]:
     """
     Extract frames from a VideoCapture object.
@@ -12,12 +12,14 @@ def extract_frames(
     ----------
     path : str
         Path to the video file.
-    frame_skip: int, default=10
+    frame_skip: int, default=30
         Save only every N-th frame.
-    skip_start: int, default=5
-        Number of frames to skip at the start of the video.
-    skip_end: int, default=5
-        Number of frames to skip at the end of the video.
+    skip_start: int, default=300
+        Number of frames to skip at the start of the video. Defaults to 5 seconds \
+            at 30 fps.
+    skip_end: int, default=300
+        Number of frames to skip at the end of the video. Defaults to 5 seconds \
+            at 30 fps.
 
     Returns
     -------
