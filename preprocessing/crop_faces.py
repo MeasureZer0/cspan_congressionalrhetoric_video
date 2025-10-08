@@ -15,6 +15,10 @@ from PIL import Image
 from torchvision import transforms
 from tqdm import tqdm
 
+# Global detector cache
+_FACE_DETECTOR = None
+_BACKEND = None
+
 
 def check_gpu_availability() -> Tuple[bool, bool]:
     """Check if GPU is available for PyTorch and OpenCV"""
@@ -36,10 +40,14 @@ def create_face_detector_with_gpu(model_path: str, use_gpu: bool = True) -> Tupl
     """
     _, opencv_gpu = check_gpu_availability()
 
+    global _FACE_DETECTOR, _BACKEND
+    if _FACE_DETECTOR is not None:
+        return _FACE_DETECTOR, _BACKEND
+
     if use_gpu and opencv_gpu:
         try:
             # Try to create detector with CUDA backend
-            detector = cv2.FaceDetectorYN.create(
+            _FACE_DETECTOR = cv2.FaceDetectorYN.create(
                 model=model_path,
                 config="",
                 input_size=(768, 576),
@@ -49,13 +57,14 @@ def create_face_detector_with_gpu(model_path: str, use_gpu: bool = True) -> Tupl
                 backend_id=cv2.dnn.DNN_BACKEND_CUDA,
                 target_id=cv2.dnn.DNN_TARGET_CUDA,
             )
+            _BACKEND = "CUDA"
             print("Face detector initialized with CUDA backend")
-            return detector, "CUDA"
+            return _FACE_DETECTOR, _BACKEND
         except Exception as e:
             print(f"CUDA backend failed ({e}), falling back to CPU")
 
     # Fallback to CPU
-    detector = cv2.FaceDetectorYN.create(
+    _FACE_DETECTOR = cv2.FaceDetectorYN.create(
         model=model_path,
         config="",
         input_size=(768, 576),
@@ -63,12 +72,12 @@ def create_face_detector_with_gpu(model_path: str, use_gpu: bool = True) -> Tupl
         nms_threshold=0.3,
         top_k=5000,
     )
-    backend = "CPU"
+    _BACKEND = "CPU"
     if not use_gpu:
         print("Face detector initialized with CPU backend (GPU disabled)")
     else:
         print("Face detector initialized with CPU backend (GPU not available)")
-    return detector, backend
+    return _FACE_DETECTOR, _BACKEND
 
 
 # Define paths to input data relative to this file
