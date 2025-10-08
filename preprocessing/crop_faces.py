@@ -11,7 +11,7 @@ import numpy as np  # NumPy for storing frames as arrays
 import pandas as pd  # Pandas for reading CSV labels
 import torch
 from extract_frames import extract_frames
-from PIL import Image
+from optical_flow import get_optical_flow_between_frames
 from torchvision import transforms
 from tqdm import tqdm
 
@@ -163,26 +163,33 @@ def crop_face(
     return rgb[top:bottom, left:right]
 
 
-def frames_to_face_tensors(
+def frames_to_faces_and_optical_flows(
     frames: List[np.ndarray],
     size: tuple = (224, 224),
     margin: Optional[float] = 0.0,
     crop_width_ratio: float = 0.5,
-) -> List[torch.Tensor]:
+) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
     """
     Detect the face closest to horizontal center \
     in each frame, crop, resize, and convert to a tensor.
+    We also compute optical flow between frames.
     Args:
         frames (List[np.ndarray]): List of BGR frames (OpenCV).
         size (tuple): Target size (H, W) for resizing.
         margin (float or None): Margin to add around detected face box.
     Returns:
-        torch.Tensor: Tensor of shape (N, C, H, W) for N frames with detected faces.
+        List[torch.Tensor]: Tensor of shape (N, C, H, W) for N frames \
+            with detected faces.
+        List[torch.Tensor]: List of optical flow tensors between consecutive frames.
     """
     if not frames:
-        return [torch.empty((0, 3, size[0], size[1]), dtype=torch.float32)]
+        return [torch.empty((0, 3, size[0], size[1]), dtype=torch.float32)], []
 
-    tensors = []
+    face_tensors = []
+    optical_flows = []
+    prev_face_gray = (
+        None  # for optical flow calculation, store grayscale to prevent recomputation
+    )
     for f in frames:
         _, w = f.shape[:2]
         new_w = int(w * crop_width_ratio)
@@ -194,17 +201,21 @@ def frames_to_face_tensors(
         if face is None:
             # skip frames without a detected face
             continue
-        # transform expects HWC in uint8
-        try:
-            face_resized = cv2.resize(face, size)
-            t = transforms.ToTensor()(face_resized)
-        except Exception:
-            # fallback: convert with PIL.Image
-            pil = Image.fromarray(face)
-            t = transforms.ToTensor()(pil)
-        tensors.append(t)
 
-    return tensors
+        # Resize the face and convert directly to tensor
+        face_resized = cv2.resize(face, size)
+        face_tensors.append(transforms.ToTensor()(face_resized))
+
+        # Then calculate optical flow
+        face_gray = cv2.cvtColor(face_resized, cv2.COLOR_RGB2GRAY)
+        optical_flow = get_optical_flow_between_frames(
+            prev_face_gray if prev_face_gray is not None else face_gray, face_gray
+        )
+        prev_face_gray = face_gray
+
+        optical_flows.append(transforms.ToTensor()(optical_flow))
+
+    return face_tensors, optical_flows
 
 
 def stack_tensors(
@@ -236,7 +247,7 @@ def save_tensor(tensor: torch.Tensor, out_path: str) -> None:
 
 def process_single_video(
     video_path: str,
-    out_path: Path,
+    out_path_base: Path,
     frame_skip: int,
     size: tuple,
     margin: float,
@@ -246,18 +257,30 @@ def process_single_video(
     Worker function: process one video, extract faces, save tensor.
     Returns output path if successful, None otherwise.
     """
-    if not purge and out_path.exists():
-        print(f"Skipping {video_path}: output already exists -> {out_path}")
-        return str(out_path)
+    out_path_faces = Path(f"{out_path_base}_faces.pt")
+    out_path_flows = Path(f"{out_path_base}_flows.pt")
+    if not purge and (out_path_faces.exists() and out_path_flows.exists()):
+        print(f"Skipping {video_path}: output already exists -> {out_path_base}")
+        return str(out_path_base)
+
     frames = extract_frames(path=video_path, frame_skip=frame_skip)
-    tensors = frames_to_face_tensors(frames, size=size, margin=margin)
-    tensor = stack_tensors(tensors, size=size)
-    if tensor.numel() == 0:
+    tensors, optical_flows = frames_to_faces_and_optical_flows(
+        frames, size=size, margin=margin
+    )
+    faces_tensor = stack_tensors(tensors, size=size)
+    flows_tensor = stack_tensors(optical_flows, size=size)
+    if faces_tensor.numel() == 0:
         print(f"No faces found for {video_path}; skipping save.")
         return None
-    save_tensor(tensor, str(out_path))
-    print(f"Saved {tensor.shape} for {video_path} -> {out_path}")
-    return str(out_path)
+
+    save_tensor(faces_tensor, str(out_path_faces))
+    print(f"Saved {faces_tensor.shape} for {video_path} -> {out_path_faces}")
+    if flows_tensor.numel() == 0:
+        print(f"No optical flows found for {video_path}; skipping save.")
+        return None
+    save_tensor(flows_tensor, str(out_path_flows))
+    print(f"Saved {flows_tensor.shape} for {video_path} -> {out_path_flows}")
+    return str(out_path_base)
 
 
 def process_videos_in_parallel(
@@ -279,8 +302,8 @@ def process_videos_in_parallel(
         video_name = row.iloc[0]
         video_path = os.path.join(data_dir, video_name)
         stem = Path(video_name).stem
-        out_path = Path(out_dir) / f"{stem}_faces.pt"
-        jobs.append((video_path, out_path, frame_skip, size, margin, purge))
+        out_path_base = Path(out_dir) / str(stem)
+        jobs.append((video_path, out_path_base, frame_skip, size, margin, purge))
 
     # Use as many workers as CPU cores if possible, but not more than jobs
     max_workers = min(os.cpu_count() or 4, len(jobs))
