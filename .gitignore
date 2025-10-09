@@ -2,8 +2,7 @@ data/
 **.ipynb_checkpoints**
 __pycache__/
 
-notebooks/viz_faces.ipynb
-
+notebooks/
 
 # MacOS
 .DS_Store

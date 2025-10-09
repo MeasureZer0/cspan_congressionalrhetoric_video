@@ -11,8 +11,7 @@ import numpy as np  # NumPy for storing frames as arrays
 import pandas as pd  # Pandas for reading CSV labels
 import torch
 from extract_frames import extract_frames
-from optical_flow import get_optical_flow_between_frames
-from torchvision import transforms
+from raft_optical_flow import get_optical_flow_between_frames
 from tqdm import tqdm
 
 # Define paths to input data relative to this file
@@ -187,9 +186,9 @@ def frames_to_faces_and_optical_flows(
 
     face_tensors = []
     optical_flows = []
-    prev_face_gray = (
-        None  # for optical flow calculation, store grayscale to prevent recomputation
-    )
+
+    prev_face = None
+
     for f in frames:
         _, w = f.shape[:2]
         new_w = int(w * crop_width_ratio)
@@ -204,16 +203,15 @@ def frames_to_faces_and_optical_flows(
 
         # Resize the face and convert directly to tensor
         face_resized = cv2.resize(face, size)
-        face_tensors.append(transforms.ToTensor()(face_resized))
-
+        face_chw = torch.from_numpy(face_resized.transpose(2, 0, 1)).float() / 255.0
+        face_tensors.append(face_chw)
         # Then calculate optical flow
-        face_gray = cv2.cvtColor(face_resized, cv2.COLOR_RGB2GRAY)
         optical_flow = get_optical_flow_between_frames(
-            prev_face_gray if prev_face_gray is not None else face_gray, face_gray
+            prev_face if prev_face is not None else face_chw, face_chw
         )
-        prev_face_gray = face_gray
+        prev_face = face_chw
 
-        optical_flows.append(transforms.ToTensor()(optical_flow))
+        optical_flows.append(optical_flow)
 
     return face_tensors, optical_flows
 
@@ -287,7 +285,7 @@ def process_videos_in_parallel(
     data_dir: Path,
     label_file: Path,
     out_dir: Path,
-    frame_skip: int = 10,
+    frame_skip: int = 30,
     size: tuple = (224, 224),
     margin: float = 0.0,
     purge: bool = False,
@@ -304,6 +302,7 @@ def process_videos_in_parallel(
         stem = Path(video_name).stem
         out_path_base = Path(out_dir) / str(stem)
         jobs.append((video_path, out_path_base, frame_skip, size, margin, purge))
+        break
 
     # Use as many workers as CPU cores if possible, but not more than jobs
     max_workers = min(os.cpu_count() or 4, len(jobs))
@@ -347,7 +346,7 @@ if __name__ == "__main__":
         help="Path to the directory where output tensors will be saved.",
     )
     parser.add_argument(
-        "--frame_skip", type=int, default=10, help="Save only every N-th frame."
+        "--frame_skip", type=int, default=30, help="Save only every N-th frame."
     )
     parser.add_argument(
         "--size", type=tuple, default=(224, 224), help="Target size for face tensors."

@@ -45,6 +45,6 @@ if __name__ == "__main__":
 
     save_paths = [os.path.join(save_dir, os.path.basename(url)) for url in urls]
 
-    for url, save_path in zip(urls, save_paths):
+    for url, save_path in zip(urls, save_paths, strict=True):
         download_file(url, save_path)
         print(Fore.GREEN + f"Downloaded to {os.path.abspath(save_path)}")
