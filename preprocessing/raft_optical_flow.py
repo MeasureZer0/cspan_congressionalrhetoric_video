@@ -8,7 +8,10 @@ model = model.eval()
 
 transforms = weights.transforms()
 
-def get_optical_flow_between_frames(prev_frame: torch.Tensor, next_frame: torch.Tensor) -> torch.Tensor:
+
+def get_optical_flow_between_frames(
+    prev_frame: torch.Tensor, next_frame: torch.Tensor
+) -> torch.Tensor:
     """
     Compute optical flow using RAFT between two frames.
     Returns a torch tensor (flow_x, flow_y).
@@ -25,4 +28,3 @@ def get_optical_flow_between_frames(prev_frame: torch.Tensor, next_frame: torch.
     with torch.no_grad():
         flows = model(prev_frame, next_frame)
         return flows[-1]
-

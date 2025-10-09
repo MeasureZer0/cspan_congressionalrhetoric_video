@@ -12,7 +12,6 @@ import pandas as pd  # Pandas for reading CSV labels
 import torch
 from extract_frames import extract_frames
 from raft_optical_flow import get_optical_flow_between_frames
-from torchvision import transforms
 from tqdm import tqdm
 
 # Define paths to input data relative to this file
@@ -188,8 +187,8 @@ def frames_to_faces_and_optical_flows(
     face_tensors = []
     optical_flows = []
 
-    prev_face = (None)
-    
+    prev_face = None
+
     for f in frames:
         _, w = f.shape[:2]
         new_w = int(w * crop_width_ratio)
@@ -303,6 +302,7 @@ def process_videos_in_parallel(
         stem = Path(video_name).stem
         out_path_base = Path(out_dir) / str(stem)
         jobs.append((video_path, out_path_base, frame_skip, size, margin, purge))
+        break
 
     # Use as many workers as CPU cores if possible, but not more than jobs
     max_workers = min(os.cpu_count() or 4, len(jobs))
