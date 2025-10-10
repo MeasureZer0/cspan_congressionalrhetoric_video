@@ -302,7 +302,6 @@ def process_videos_in_parallel(
         stem = Path(video_name).stem
         out_path_base = Path(out_dir) / str(stem)
         jobs.append((video_path, out_path_base, frame_skip, size, margin, purge))
-        break
 
     # Use as many workers as CPU cores if possible, but not more than jobs
     max_workers = min(os.cpu_count() or 4, len(jobs))
