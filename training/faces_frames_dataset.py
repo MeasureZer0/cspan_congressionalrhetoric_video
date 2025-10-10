@@ -48,7 +48,7 @@ class FacesFramesDataset(Dataset):
         # Return the total number of samples in the dataset
         return len(self.csv_file)
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Load a single sample (faces tensor and label) given an index.
 
@@ -56,16 +56,18 @@ class FacesFramesDataset(Dataset):
             idx (int): Index of the sample to fetch.
 
         Returns:
-            tuple[torch.Tensor, torch.Tensor]: faces tensor and label tensor
+            tuple[torch.Tensor, torch.Tensor,, torch.Tensor]: faces, flows and label tensor
         """
         # Extract the stem (filename without extension) from CSV
         stem = Path(str(self.csv_file.iloc[idx, 0])).stem
 
-        # Construct the full path to the .pt file
+        # Construct the full path to the .pt files
         face_path = os.path.join(self.img_dir, f"{stem}_faces.pt")
+        flow_path = os.path.join(self.img_dir, f"{stem}_flows.pt")
 
         # Load the preprocessed frames tensor
         faces = torch.load(face_path)
+        flows = torch.load(flow_path)
 
         # Get the label string from CSV
         label_str = str(self.csv_file.iloc[idx, 1]).strip()
@@ -85,4 +87,4 @@ class FacesFramesDataset(Dataset):
             label = self.target_transform(label)
 
         # Return faces tensor and label tensor
-        return faces, label
+        return faces, flows, label
