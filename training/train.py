@@ -41,10 +41,12 @@ validation_generator = DataLoader(val, **params)
 test_generator = DataLoader(test, **params)
 
 # Iterate over batches
-for local_batch, local_labels in training_generator:
+for face_batch, flow_batch, local_labels in training_generator:
     # Move batch to device
-    local_batch = local_batch.to(device)
+    face_batch = face_batch.to(device)
+    flow_batch = flow_batch.to(device)
     local_labels = local_labels.to(device)
 
-    print("Batch size:", local_batch.shape)
+    print("Face batch size:", face_batch.shape)
+    print("Flow batch size:", flow_batch.shape)
     print("Labels:", local_labels)
