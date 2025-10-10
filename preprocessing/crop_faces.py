@@ -211,7 +211,7 @@ def frames_to_faces_and_optical_flows(
         )
         prev_face = face_chw
 
-        optical_flows.append(optical_flow)
+        optical_flows.append(optical_flow.squeeze(0))
 
     return face_tensors, optical_flows
 
