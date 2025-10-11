@@ -11,6 +11,7 @@ import numpy as np  # NumPy for storing frames as arrays
 import pandas as pd  # Pandas for reading CSV labels
 import torch
 from extract_frames import extract_frames
+from face_detector import detect_faces_batch
 from raft_optical_flow import get_optical_flow_between_frames
 from tqdm import tqdm
 
@@ -26,21 +27,6 @@ models_dir = data_dir / "weights"
 assert (label_file).exists(), f"Label file not found: {label_file}"
 assert raw_videos_dir.exists(), f"Raw videos directory not found: {raw_videos_dir}"
 
-assert (models_dir / "face_detection_yunet_2023mar.onnx").exists(), (
-    f"Model file not found: {models_dir / 'face_detection_yunet_2023mar.onnx'}. "
-    "Please run scripts/download-weights.py to download the model weights."
-)
-
-# Initialise YuNet face detector
-face_detector = cv2.FaceDetectorYN.create(
-    model=str(models_dir / "face_detection_yunet_2023mar.onnx"),
-    config="",
-    input_size=(768, 576),
-    score_threshold=0.9,
-    nms_threshold=0.3,
-    top_k=5000,
-)
-
 
 def _rgb(frame: np.ndarray) -> np.ndarray:
     """
@@ -51,68 +37,6 @@ def _rgb(frame: np.ndarray) -> np.ndarray:
         np.ndarray: Frame in RGB format.
     """
     return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-
-def detect_speakers_face(frame: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
-    """
-    Detect the most central face in the given video frame using YuNet.
-
-    Args:
-        frame (np.ndarray): Input frame in BGR format.
-            for detection (resized for speed). Default = 640.
-            If None, detection runs on the original resolution.
-
-    Returns:
-        Optional[Tuple[int, int, int, int]]: Bounding box of the detected face in
-            (top, right, bottom, left) format.
-            Returns None if no face is found.
-    """
-    # Convert from BGR to RGB
-    rgb = _rgb(frame)
-    h, w = rgb.shape[:2]
-    face_detector.setInputSize((w, h))
-    _, faces = face_detector.detect(rgb)
-    if faces is None or len(faces) == 0:
-        return None
-
-    # Convert detected faces to bounding boxes
-    locations = []
-    for face in faces:
-        # Ensure face is an array, not a scalar
-        if isinstance(face, (np.ndarray, list)):
-            box = np.array(face[0:4]).astype(np.uint32)
-            top = int(round(box[1]))
-            right = int(round(box[0] + box[2]))
-            bottom = int(round(box[1] + box[3]))
-            left = int(round(box[0]))
-            locations.append((top, right, bottom, left))
-    if not locations:
-        return None
-
-    best_idx = 0
-    if len(locations) > 1:
-        # Choose the face closest to the image center
-        img_center = np.array([h / 2, w / 2])
-
-        min_dist = float("inf")
-        best_idx = 0
-        for i, loc in enumerate(locations):
-            t, r, b, left = loc
-            # Compute face center
-            face_center = np.array(
-                [
-                    (t + b) / 2,
-                    (left + r) / 2,
-                ]
-            )
-            dist = np.linalg.norm(face_center - img_center)
-
-            if dist < min_dist:
-                min_dist = dist
-                best_idx = i
-
-    t, r, b, left = locations[best_idx]
-    return (t, r, b, left)
 
 
 def crop_face(
@@ -189,13 +113,19 @@ def frames_to_faces_and_optical_flows(
 
     prev_face = None
 
+    # Precompute detections in batch for speed (returns locations per frame)
+    # We need to pass the center-cropped frames used for detection.
+    cropped_frames = []
     for f in frames:
         _, w = f.shape[:2]
         new_w = int(w * crop_width_ratio)
         start = (w - new_w) // 2
         f_cropped = f[:, start : start + new_w, :]
+        cropped_frames.append(f_cropped)
 
-        loc = detect_speakers_face(f_cropped)
+    detections = detect_faces_batch(cropped_frames)
+
+    for f_cropped, loc in zip(cropped_frames, detections, strict=True):
         face = crop_face(f_cropped, loc, margin=margin)
         if face is None:
             # skip frames without a detected face
@@ -205,6 +135,7 @@ def frames_to_faces_and_optical_flows(
         face_resized = cv2.resize(face, size)
         face_chw = torch.from_numpy(face_resized.transpose(2, 0, 1)).float() / 255.0
         face_tensors.append(face_chw)
+
         # Then calculate optical flow
         optical_flow = get_optical_flow_between_frames(
             prev_face if prev_face is not None else face_chw, face_chw
