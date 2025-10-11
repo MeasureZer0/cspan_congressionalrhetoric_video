@@ -6,6 +6,11 @@ and helper functions to detect the most central face in a single frame or
 in a batch of frames. Frames are expected as OpenCV BGR numpy arrays.
 """
 
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+
 from typing import List, Optional, Tuple
 
 import numpy as np

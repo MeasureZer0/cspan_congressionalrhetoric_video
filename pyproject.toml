@@ -1,3 +1,5 @@
 [tool.ruff]
 # Enable basic checks and import sorting
 lint.select = ["E", "F", "I", "B", "ANN"]
+# Exclude facenet_pytorch/
+exclude = ["facenet_pytorch/*"]
