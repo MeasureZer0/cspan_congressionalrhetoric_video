@@ -3,6 +3,7 @@ from torchvision.models.optical_flow import Raft_Large_Weights, raft_large
 
 weights = Raft_Large_Weights.DEFAULT
 device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"RAFT is using device: {device}")
 model = raft_large(weights=weights, progress=False).to(device)
 model = model.eval()
 

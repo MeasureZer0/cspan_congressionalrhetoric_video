@@ -3,6 +3,10 @@ data/
 __pycache__/
 
 notebooks/
+logs/
+*.log
+*.out
+sbatch_*
 
 # MacOS
 .DS_Store
