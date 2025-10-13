@@ -28,4 +28,4 @@ def get_optical_flow_between_frames(
     # RAFT prediction
     with torch.no_grad():
         flows = model(prev_frame, next_frame)
-        return flows[-1]
+        return flows[-1].squeeze(0)
