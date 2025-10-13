@@ -9,7 +9,6 @@ from torch.utils.data import Dataset
 # Define transform type
 Transform = Optional[Callable[[Any], Any]]
 
-
 class FacesFramesDataset(Dataset):
     """
     PyTorch Dataset for loading preprocessed face tensors from .pt files
@@ -63,18 +62,17 @@ class FacesFramesDataset(Dataset):
 
         # Construct the full path to the .pt file
         face_path = os.path.join(self.img_dir, f"{stem}_faces.pt")
+        flow_path = os.path.join(self.img_dir, f"{stem}_flows.pt")
 
         # Load the preprocessed frames tensor
         faces = torch.load(face_path)
+        flows = torch.load(flow_path)
 
         # Get the label string from CSV
         label_str = str(self.csv_file.iloc[idx, 1]).strip()
 
-        # Convert string label to integer using self.classes mapping
-        label = self.classes[label_str]
-
-        # Convert label to a tensor
-        label = torch.tensor(label, dtype=torch.long)
+        # Load and convert string label to tensor
+        label = torch.tensor(self.classes[label_str], dtype=torch.long)
 
         # Apply optional transformations to faces tensor
         if self.transform:
@@ -85,4 +83,4 @@ class FacesFramesDataset(Dataset):
             label = self.target_transform(label)
 
         # Return faces tensor and label tensor
-        return faces, label
+        return faces, flows, label
