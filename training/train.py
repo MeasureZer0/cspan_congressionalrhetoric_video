@@ -87,8 +87,9 @@ class FeatureAggregatingLSTM(nn.Module):
         packed = pack_padded_sequence(padded, lengths, batch_first=True, enforce_sorted=False)
         packed_output, _ = self.lstm(packed)
         output_padded, _ = pad_packed_sequence(packed_output, batch_first=True)
+        print(f"output_padded: {output_padded.shape}")
         logits = self.fc(output_padded)
-        print(logits.shape)
+        print(f"logits: {logits.shape}")
         return logits
 
 
@@ -101,10 +102,10 @@ def masked_loss(logits, targets, lengths):
     return loss.sum() / mask.sum()
       
 
-model = FeatureAggregatingLSTM(num_classes=5).to(device)
+model = FeatureAggregatingLSTM(num_classes=3).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
-for epoch in range(1):
+for epoch in range(10):
     model.train()
     for batch_image, batch_flow, labels, lengths in tqdm(training_generator):
         optimizer.zero_grad()
