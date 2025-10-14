@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 
 import torch
@@ -9,19 +10,23 @@ from torch.utils.data import DataLoader, random_split
 from torchvision.models import ResNet18_Weights, resnet18
 from tqdm import tqdm
 
+
 # Check for GPU availability and configure device
-use_cuda = torch.cuda.is_available()
-device = torch.device("cuda:0" if use_cuda else "cpu")
+def _get_device() -> torch.device:
+    """Return the available device (cuda if available else cpu)."""
+    use_cuda = torch.cuda.is_available()
+    return torch.device("cuda:0" if use_cuda else "cpu")
 
-# Set deterministic behavior for reproducibility
-torch.manual_seed(2)
 
-# Define data directories relative to the project structure
-script_dir = Path(__file__).resolve().parent
-project_root = script_dir.parent
-data_dir = project_root / "data"  # Main data folder
-img_dir = Path(data_dir / "faces")  # directory containing image sequences
-csv_file = Path(data_dir / "labels.csv")  # CSV with labels for each sequence
+def _default_paths() -> tuple[Path, Path, Path]:
+    """Return default (project_root, img_dir, csv_file, weights_dir) paths."""
+    script_dir = Path(__file__).resolve().parent
+    project_root = script_dir.parent
+    data_dir = project_root / "data"  # Main data folder
+    img_dir = data_dir / "faces"  # Directory containing image sequences
+    csv_file = data_dir / "labels.csv"  # CSV file with labels for each sequence
+    weights_dir = data_dir / "weights"  # Directory to save model weights to
+    return img_dir, csv_file, weights_dir
 
 
 def collate_fn(
@@ -40,9 +45,10 @@ def collate_fn(
         labels: tensor of shape (batch_size,)
         lengths: tensor containing sequence lengths for each batch element
     """
-    batch_image = [item[0].to(device) for item in batch]
-    batch_flow = [item[1].to(device) for item in batch]
-    labels = torch.stack([item[2] for item in batch]).to(device)
+    # NOTE: do not move device resolution to module scope; resolve at call time
+    batch_image = [item[0] for item in batch]
+    batch_flow = [item[1] for item in batch]
+    labels = torch.stack([item[2] for item in batch])
     lengths = torch.tensor([seq.shape[0] for seq in batch_image], dtype=torch.long)
     return batch_image, batch_flow, labels, lengths
 
@@ -54,21 +60,6 @@ params = {
     "num_workers": 0,  # Data loading in the main process
     "collate_fn": collate_fn,
 }
-
-# Initialize dataset and split into training/validation/test subsets
-dataset = FacesFramesDataset(csv_file, img_dir)
-dataset_size = len(dataset)
-train_size = int(dataset_size * 0.8)
-val_size = int(dataset_size * 0.1)
-test_size = dataset_size - train_size - val_size
-
-# Random split of the dataset
-train, val, test = random_split(dataset, [train_size, val_size, test_size])
-
-# Create DataLoaders for each split
-training_generator = DataLoader(train, **params)
-validation_generator = DataLoader(val, **params)
-test_generator = DataLoader(test, **params)
 
 
 def build_cnn(input_channels: int) -> tuple[nn.Module, int]:
@@ -91,7 +82,7 @@ def build_cnn(input_channels: int) -> tuple[nn.Module, int]:
     feature_size = model.fc.in_features
     # remove classification layer
     model.fc = nn.Identity()  # type: ignore
-    model.to(device)
+    # model will be moved to the target device by the caller (e.g. model.to(device))
     return model, feature_size
 
 
@@ -141,7 +132,9 @@ class FeatureAggregatingLSTM(nn.Module):
             logits: tensor of shape [B, T, num_classes]
         """
         features = []
+        device = next(self.parameters()).device
         for seq_image, seq_flow in zip(batch_image, batch_flow, strict=False):
+            # move inputs to the same device as the model parameters
             seq_image = seq_image.to(device)
             seq_flow = seq_flow.to(device)
             image_features = self.image_extractor(seq_image)  # [T, feat_dim]
@@ -163,6 +156,100 @@ class FeatureAggregatingLSTM(nn.Module):
         return logits
 
 
+def run_training(
+    *,
+    epochs: int = 10,
+    batch_size: int = 2,
+) -> None:
+    """
+    Run the full training loop.
+
+    Args:
+        epochs: number of training epochs
+        batch_size: batch size for training
+    """
+
+    device = _get_device()
+    torch.manual_seed(2)
+
+    # Resolve default paths if not provided
+    img_dir, csv_file, weights_dir = _default_paths()
+
+    params = {
+        "batch_size": batch_size,
+        "shuffle": True,
+        "num_workers": 0,
+        "collate_fn": collate_fn,
+    }
+
+    dataset = FacesFramesDataset(csv_file, img_dir)
+    dataset_size = len(dataset)
+    train_size = int(dataset_size * 0.8)
+    val_size = int(dataset_size * 0.1)
+    test_size = dataset_size - train_size - val_size
+
+    train, val, test = random_split(dataset, [train_size, val_size, test_size])
+
+    training_generator = DataLoader(train, **params)
+    validation_generator = DataLoader(val, **params)
+    test_generator = DataLoader(test, **params)
+
+    model = FeatureAggregatingLSTM(num_classes=3).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+
+    for epoch in range(epochs):
+        model.train()
+        total_loss, total_acc = 0.0, 0.0
+        for batch_image, batch_flow, labels, lengths in tqdm(
+            training_generator, desc=f"Epoch {epoch + 1}"
+        ):
+            optimizer.zero_grad()
+            labels = labels.unsqueeze(1).repeat(1, max(lengths)).to(device)
+            logits = model(batch_image, batch_flow, lengths)
+
+            loss = masked_loss(logits, labels, lengths)
+            acc = masked_accuracy(logits, labels, lengths)
+
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+            total_acc += acc.item()
+
+        avg_train_loss = total_loss / len(training_generator)
+        avg_train_acc = total_acc / len(training_generator)
+        print(
+            f"Epoch {epoch + 1}: train loss = {avg_train_loss:.4f}, "
+            f"acc = {avg_train_acc:.4f}"
+        )
+
+        # Run validation phase after each epoch
+        val_loss, val_acc = evaluate(
+            model,
+            validation_generator,
+            device,
+            desc="Validation",
+        )
+        print(f"Validation: loss = {val_loss:.4f}, acc = {val_acc * 100:.2f}%")
+
+        torch.cuda.empty_cache()
+
+    # Final test evaluation after all epochs
+    test_loss, test_acc = evaluate(model, test_generator, device, desc="Test")
+    print(f"Test: loss = {test_loss:.4f}, acc = {test_acc * 100:.2f}%")
+
+    torch.cuda.empty_cache()
+
+    # Save final model to disk
+    final_model_path = weights_dir / f"final_model_epoch_{epochs + 1}.pt"
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        model.state_dict(),
+        final_model_path,
+    )
+    print(f"Final model saved: {final_model_path}")
+
+
 def masked_loss(
     logits: torch.Tensor, targets: torch.Tensor, lengths: torch.Tensor
 ) -> torch.Tensor:
@@ -178,8 +265,9 @@ def masked_loss(
         scalar average loss over valid time steps
     """
     T = logits.shape[1]
+    # ensure mask is created on the same device as logits
     mask = torch.arange(T, device=logits.device).unsqueeze(0) < lengths.to(
-        device
+        logits.device
     ).unsqueeze(1)
     loss = F.cross_entropy(logits.transpose(1, 2), targets, reduction="none")
     loss = loss * mask
@@ -201,8 +289,9 @@ def masked_accuracy(
         scalar accuracy value over valid positions
     """
     T = logits.shape[1]
+    # ensure mask is created on the same device as logits
     mask = torch.arange(T, device=logits.device).unsqueeze(0) < lengths.to(
-        device
+        logits.device
     ).unsqueeze(1)
 
     predicted_labels = torch.argmax(logits, dim=2)
@@ -243,46 +332,25 @@ def evaluate(
     return avg_loss, avg_acc
 
 
-# Initialize model and optimizer
-model = FeatureAggregatingLSTM(num_classes=3).to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-
-# Training loop
-loss = None
-for epoch in range(10):
-    model.train()
-    total_loss, total_acc = 0.0, 0.0
-    for batch_image, batch_flow, labels, lengths in tqdm(
-        training_generator, desc=f"Epoch {epoch + 1}"
-    ):
-        optimizer.zero_grad()
-        labels = labels.unsqueeze(1).repeat(1, max(lengths)).to(device)
-        logits = model(batch_image, batch_flow, lengths)
-
-        loss = masked_loss(logits, labels, lengths)
-        acc = masked_accuracy(logits, labels, lengths)
-
-        loss.backward()
-        optimizer.step()
-
-        total_loss += loss.item()
-        total_acc += acc.item()
-
-    avg_train_loss = total_loss / len(training_generator)
-    avg_train_acc = total_acc / len(training_generator)
-    print(
-        f"Epoch {epoch + 1}: train loss = {avg_train_loss:.4f},\
-              acc = {avg_train_acc:.4f}"
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description=("Train the video classification model.")
     )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=10,
+        help="Number of training epochs.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=2,
+        help="Batch size for training.",
+    )
+    args = parser.parse_args()
 
-    # Run validation phase after each epoch
-    val_loss, val_acc = evaluate(model, validation_generator, device, desc="Validation")
-    print(f"Validation: loss = {val_loss:.4f}, acc = {val_acc * 100:.2f}%")
-
-    torch.cuda.empty_cache()  # release unused memory
-
-# Final test evaluation after all epochs
-test_loss, test_acc = evaluate(model, test_generator, device, desc="Test")
-print(f"Test: loss = {test_loss:.4f}, acc = {test_acc * 100:.2f}%")
-
-torch.cuda.empty_cache()
+    run_training(
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+    )
