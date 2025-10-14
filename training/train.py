@@ -19,7 +19,7 @@ def _get_device() -> torch.device:
 
 
 def _default_paths() -> tuple[Path, Path, Path]:
-    """Return default (project_root, img_dir, csv_file, weights_dir) paths."""
+    """Return default (img_dir, csv_file, weights_dir) paths."""
     script_dir = Path(__file__).resolve().parent
     project_root = script_dir.parent
     data_dir = project_root / "data"  # Main data folder
