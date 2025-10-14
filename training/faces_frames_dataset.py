@@ -9,6 +9,7 @@ from torch.utils.data import Dataset
 # Define transform type
 Transform = Optional[Callable[[Any], Any]]
 
+
 class FacesFramesDataset(Dataset):
     """
     PyTorch Dataset for loading preprocessed face tensors from .pt files
@@ -47,7 +48,7 @@ class FacesFramesDataset(Dataset):
         # Return the total number of samples in the dataset
         return len(self.csv_file)
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Load a single sample (faces tensor and label) given an index.
 
@@ -82,5 +83,5 @@ class FacesFramesDataset(Dataset):
         if self.target_transform:
             label = self.target_transform(label)
 
-        # Return faces tensor and label tensor
+        # Return faces, flows and label tensors
         return faces, flows, label
