@@ -33,7 +33,7 @@ def collate_fn(batch):
 
 # DataLoader parameters
 params = {
-    "batch_size": 2,  # Batch size
+    "batch_size": 1,  # Batch size
     "shuffle": True,  # Shuffle the data
     "num_workers": 0,  # Number of subprocesses to use for data loading
     "collate_fn": collate_fn
@@ -95,22 +95,40 @@ class FeatureAggregatingLSTM(nn.Module):
 
 def masked_loss(logits, targets, lengths):
     T = logits.shape[1]
-    mask = torch.arange(T, device=logits.device).unsqueeze(0) < lengths.unsqueeze(1)
+    mask = torch.arange(T, device=logits.device).unsqueeze(0) < lengths.to(device).unsqueeze(1)
     loss = F.cross_entropy(logits.transpose(1, 2), targets, reduction="none")
-    print(loss.shape, mask.shape)
     loss = loss * mask
     return loss.sum() / mask.sum()
-      
+
+def masked_accuracy(logits, targets, lengths):
+    T = logits.shape[1]
+    mask = torch.arange(T, device=logits.device).unsqueeze(0) < lengths.to(device).unsqueeze(1)
+
+    predicted_labels = torch.argmax(logits, dim=2)
+    correct = (predicted_labels == targets) & mask
+    accuracy = correct.sum().float() / mask.sum().float()
+    return accuracy
 
 model = FeatureAggregatingLSTM(num_classes=3).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
 for epoch in range(10):
     model.train()
+    total_loss, total_acc = 0.0, 0.0
     for batch_image, batch_flow, labels, lengths in tqdm(training_generator):
         optimizer.zero_grad()
+
+        labels = labels.unsqueeze(1).repeat(1, max(lengths)).to(device)
+
         logits = model(batch_image, batch_flow, lengths)
-        loss = masked_loss(logits, labels.unsqueeze(1).repeat(1, logits.shape[1]).to(device), lengths.to(device))
+        loss = masked_loss(logits, labels, lengths)
+        accuracy = masked_accuracy(logits, labels, lengths)
+
         loss.backward()
         optimizer.step()
-    print(f"Epoch {epoch+1}: loss = {loss:.4f}")
+
+        total_loss += loss.item()
+        total_acc += accuracy.item()
+    avg_loss = total_loss / len(training_generator)
+    avg_acc = total_acc / len(training_generator)
+    print(f"Epoch {epoch+1}: loss = {avg_loss:.4f}, accuracy = {avg_acc:.4f}")
