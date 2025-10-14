@@ -186,7 +186,9 @@ def masked_loss(
     return loss.sum() / mask.sum()
 
 
-def masked_accuracy(logits, targets, lengths):
+def masked_accuracy(
+    logits: torch.Tensor, targets: torch.Tensor, lengths: torch.Tensor
+) -> torch.Tensor:
     """
     Computes accuracy only for non-padded elements.
 
@@ -209,7 +211,9 @@ def masked_accuracy(logits, targets, lengths):
     return accuracy
 
 
-def evaluate(model, dataloader, device, desc="Eval"):
+def evaluate(
+    model: nn.Module, dataloader: DataLoader, device: torch.device, desc: str = "Eval"
+) -> tuple[float, float]:
     """
     Evaluates the model on the provided dataset.
 
@@ -267,7 +271,8 @@ for epoch in range(10):
     avg_train_loss = total_loss / len(training_generator)
     avg_train_acc = total_acc / len(training_generator)
     print(
-        f"Epoch {epoch + 1}: train loss = {avg_train_loss:.4f}, acc = {avg_train_acc:.4f}"
+        f"Epoch {epoch + 1}: train loss = {avg_train_loss:.4f},\
+              acc = {avg_train_acc:.4f}"
     )
 
     # Run validation phase after each epoch
