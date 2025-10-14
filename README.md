@@ -1,6 +1,6 @@
-# The Data Mine 2025/2026 Congressional Rhetoric
+# The Data Mine 2025/2026 Congressional Rhetoric - Video Team
 
-## Video team
+[![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 
 This repository contains the code and resources for the video team working on the Data Mine 2025/2026 Congressional Rhetoric project. The team is responsible for analyzing speeches from members of the congress to find out whether the sentiment is positive, negative or neutral.
 
