@@ -96,7 +96,7 @@ class FeatureAggregatingLSTM(nn.Module):
         lengths: torch.Tensor,
     ) -> torch.Tensor:
         features = []
-        for seq_image, seq_flow in zip(batch_image, batch_flow):
+        for seq_image, seq_flow in zip(batch_image, batch_flow, strict=False):
             seq_image = seq_image.to(device)
             seq_flow = seq_flow.to(device)
             image_features = self.image_extractor(seq_image)
