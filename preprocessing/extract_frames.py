@@ -3,7 +3,10 @@ from numpy import ndarray
 
 
 def extract_frames(
-    path: str, frame_skip: int = 30, skip_start: int = 150, skip_end: int = 150
+    path: str,
+    frame_skip: int = 30,
+    skip_start_ratio: float = 0.1,
+    skip_end_ratio: float = 0.1,
 ) -> list[ndarray]:
     """
     Extract frames from a VideoCapture object.
@@ -14,11 +17,11 @@ def extract_frames(
         Path to the video file.
     frame_skip: int, default=30
         Save only every N-th frame.
-    skip_start: int, default=300
-        Number of frames to skip at the start of the video. Defaults to 5 seconds \
+    skip_start_ratio: float, default=0.1
+        Ratio of frames to skip at the start of the video. Maximum 5 seconds \
             at 30 fps.
-    skip_end: int, default=300
-        Number of frames to skip at the end of the video. Defaults to 5 seconds \
+    skip_end_ratio: float, default=0.1
+        Ratio of frames to skip at the end of the video. Maximum 5 seconds \
             at 30 fps.
 
     Returns
@@ -33,6 +36,9 @@ def extract_frames(
 
     # Total number of frames in the video
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    skip_start = min(int(total_frames * skip_start_ratio), 5 * 30)
+    skip_end = min(int(total_frames * skip_end_ratio), 5 * 30)
 
     frames = []  # List to store selected frames
     counter = 0  # Counter for the current frame index
