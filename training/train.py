@@ -232,13 +232,9 @@ def run_training(
         )
         print(f"Validation: loss = {val_loss:.4f}, acc = {val_acc * 100:.2f}%")
 
-        torch.cuda.empty_cache()
-
     # Final test evaluation after all epochs
     test_loss, test_acc = evaluate(model, test_generator, device, desc="Test")
     print(f"Test: loss = {test_loss:.4f}, acc = {test_acc * 100:.2f}%")
-
-    torch.cuda.empty_cache()
 
     # Save final model to disk
     final_model_path = weights_dir / f"final_model_epoch_{epochs + 1}.pt"
