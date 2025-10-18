@@ -124,7 +124,7 @@ options:
 
 ## Utilities
 
-#### download-weights.py
+### download-weights.py
 
 The `download-weights.py` script downloads the required model weights for the project. It saves the weights in the `data/weights` directory. To run the script, use:
 
@@ -133,7 +133,7 @@ chmod +x scripts/download-weights.py
 ./scripts/download-weights.py
 ```
 
-#### pip-uninstall.py
+### pip-uninstall.py
 
 For easier package uninstallation, you can use the provided `pip-uninstall.py` script. It helps to uninstall packages along with their dependencies that are not required by other packages. Usage:
 
@@ -145,3 +145,5 @@ chmod +x scripts/pip-uninstall.py
 ## Sources
 
 - [YuNet model from OpenCV](https://github.com/opencv/opencv_zoo/blob/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx)
+- Karen Simonyan, Andrew Zisserman, __Two-Stream Convolutional Networks for Action Recognition in Videos__, [https://arxiv.org/pdf/1406.2199](https://arxiv.org/pdf/1406.2199), 2014.
+- Joe Yue-Hei Ng, Matthew Hausknecht, Sudheendra Vijayanarasimhan, Rajat Monga, Oriol Vinyals, George Toderici, __Beyond Short Snippets: Deep Networks for Video Classification__, [https://arxiv.org/pdf/1503.08909](https://arxiv.org/pdf/1503.08909), 2015.
