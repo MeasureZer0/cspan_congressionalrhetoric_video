@@ -156,7 +156,9 @@ class FeatureAggregatingLSTM(nn.Module):
 
         # Unpack sequences back to padded representation
         output_padded, _ = pad_packed_sequence(packed_output, batch_first=True)
-        logits = self.fc(output_padded)
+        avg_pool = torch.sum(output_padded, dim = 1) / lengths.to(device).unsqueeze(1)
+        
+        logits = self.fc(avg_pool)
         return logits
 
 
@@ -228,11 +230,11 @@ def run_training(
             training_generator, desc=f"Epoch {epoch + 1}"
         ):
             optimizer.zero_grad()
-            labels = labels.unsqueeze(1).repeat(1, max(lengths)).to(device)
+            labels = labels.to(device)
             logits = model(batch_image, batch_flow, lengths)
 
-            loss = masked_loss(logits, labels, lengths)
-            acc = masked_accuracy(logits, labels, lengths)
+            loss = sequence_loss(logits, labels)
+            acc = sequence_accuracy(logits, labels)
 
             loss.backward()
             optimizer.step()
@@ -282,8 +284,8 @@ def run_training(
         f.flush()
 
 
-def masked_loss(
-    logits: torch.Tensor, targets: torch.Tensor, lengths: torch.Tensor
+def sequence_loss(
+    logits: torch.Tensor, targets: torch.Tensor
 ) -> torch.Tensor:
     """
     Computes cross-entropy loss while ignoring padded positions.
@@ -296,18 +298,11 @@ def masked_loss(
     Returns:
         scalar average loss over valid time steps
     """
-    T = logits.shape[1]
-    # ensure mask is created on the same device as logits
-    mask = torch.arange(T, device=logits.device).unsqueeze(0) < lengths.to(
-        logits.device
-    ).unsqueeze(1)
-    loss = F.cross_entropy(logits.transpose(1, 2), targets, reduction="none")
-    loss = loss * mask
-    return loss.sum() / mask.sum()
+    return F.cross_entropy(logits, targets)
 
 
-def masked_accuracy(
-    logits: torch.Tensor, targets: torch.Tensor, lengths: torch.Tensor
+def sequence_accuracy(
+    logits: torch.Tensor, targets: torch.Tensor
 ) -> torch.Tensor:
     """
     Computes accuracy only for non-padded elements.
@@ -320,16 +315,8 @@ def masked_accuracy(
     Returns:
         scalar accuracy value over valid positions
     """
-    T = logits.shape[1]
-    # ensure mask is created on the same device as logits
-    mask = torch.arange(T, device=logits.device).unsqueeze(0) < lengths.to(
-        logits.device
-    ).unsqueeze(1)
-
-    predicted_labels = torch.argmax(logits, dim=2)
-    correct = (predicted_labels == targets) & mask
-    accuracy = correct.sum().float() / mask.sum().float()
-    return accuracy
+    preds = torch.argmax(logits, dim=1)
+    return (preds == targets).float().mean()
 
 
 def evaluate(
@@ -352,10 +339,10 @@ def evaluate(
     total_loss, total_acc = 0.0, 0.0
     with torch.no_grad():
         for batch_image, batch_flow, labels, lengths in tqdm(dataloader, desc=desc):
-            labels = labels.unsqueeze(1).repeat(1, max(lengths)).to(device)
+            labels = labels.to(device)
             logits = model(batch_image, batch_flow, lengths)
-            loss = masked_loss(logits, labels, lengths)
-            acc = masked_accuracy(logits, labels, lengths)
+            loss = sequence_loss(logits, labels)
+            acc = sequence_accuracy(logits, labels)
             total_loss += loss.item()
             total_acc += acc.item()
 
