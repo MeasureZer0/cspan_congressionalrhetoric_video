@@ -1,4 +1,7 @@
 import argparse
+import csv
+import os
+from datetime import datetime
 from pathlib import Path
 
 import torch
@@ -18,15 +21,16 @@ def _get_device() -> torch.device:
     return torch.device("cuda:0" if use_cuda else "cpu")
 
 
-def _default_paths() -> tuple[Path, Path, Path]:
-    """Return default (img_dir, csv_file, weights_dir) paths."""
+def _default_paths() -> tuple[Path, Path, Path, Path]:
+    """Return default (img_dir, csv_file, weights_dir, logs_dir) paths."""
     script_dir = Path(__file__).resolve().parent
     project_root = script_dir.parent
     data_dir = project_root / "data"  # Main data folder
     img_dir = data_dir / "faces"  # Directory containing image sequences
     csv_file = data_dir / "labels.csv"  # CSV file with labels for each sequence
     weights_dir = data_dir / "weights"  # Directory to save model weights to
-    return img_dir, csv_file, weights_dir
+    logs_dir = project_root / "logs"  # Directory to save training logs to
+    return img_dir, csv_file, weights_dir, logs_dir
 
 
 def collate_fn(
@@ -160,6 +164,7 @@ def run_training(
     *,
     epochs: int = 10,
     batch_size: int = 2,
+    output_csv: Path | str | None = None,
 ) -> None:
     """
     Run the full training loop.
@@ -173,7 +178,7 @@ def run_training(
     torch.manual_seed(2)
 
     # Resolve default paths if not provided
-    img_dir, csv_file, weights_dir = _default_paths()
+    img_dir, csv_file, weights_dir, logs_dir = _default_paths()
 
     params = {
         "batch_size": batch_size,
@@ -196,6 +201,25 @@ def run_training(
 
     model = FeatureAggregatingLSTM(num_classes=3).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+
+    # Prepare output CSV path
+    if output_csv is None:
+        output_path = (
+            logs_dir
+            / f"training_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        )
+    else:
+        output_path = Path(output_csv)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # If file does not exist or is empty, write header
+    if not output_path.exists() or output_path.stat().st_size == 0:
+        with open(output_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["epoch", "val_loss", "val_acc"])
+            f.flush()
+            os.fsync(f.fileno())
 
     for epoch in range(epochs):
         model.train()
@@ -232,18 +256,30 @@ def run_training(
         )
         print(f"Validation: loss = {val_loss:.4f}, acc = {val_acc * 100:.2f}%")
 
+        # Append epoch validation loss to CSV and flush to disk
+        with open(output_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([epoch + 1, f"{val_loss:.6f}", f"{val_acc:.6f}"])
+            f.flush()
+
     # Final test evaluation after all epochs
     test_loss, test_acc = evaluate(model, test_generator, device, desc="Test")
     print(f"Test: loss = {test_loss:.4f}, acc = {test_acc * 100:.2f}%")
 
     # Save final model to disk
-    final_model_path = weights_dir / f"final_model_epoch_{epochs + 1}.pt"
+    final_model_path = weights_dir / f"final_model_epoch_{epochs}.pt"
     weights_dir.mkdir(parents=True, exist_ok=True)
     torch.save(
         model.state_dict(),
         final_model_path,
     )
     print(f"Final model saved: {final_model_path}")
+
+    # Append final test loss to CSV and flush
+    with open(output_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["final", f"{test_loss:.6f}", f"{test_acc:.6f}"])
+        f.flush()
 
 
 def masked_loss(
@@ -344,9 +380,19 @@ if __name__ == "__main__":
         default=2,
         help="Batch size for training.",
     )
+    parser.add_argument(
+        "--output-csv",
+        type=str,
+        default=None,
+        help=(
+            "Path to output CSV file to append training results. "
+            "Default is logs/training_results_{datetime}.csv."
+        ),
+    )
     args = parser.parse_args()
 
     run_training(
         epochs=args.epochs,
         batch_size=args.batch_size,
+        output_csv=args.output_csv,
     )
