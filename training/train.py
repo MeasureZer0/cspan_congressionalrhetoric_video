@@ -112,7 +112,10 @@ class FeatureAggregatingLSTM(nn.Module):
             num_layers=num_layers,
             batch_first=True,
             bidirectional=False,
+            dropout=0.3,
         )
+
+        self.dropout = nn.Dropout(0.3)
 
         # Final linear layer for classification at each time step
         self.fc = nn.Linear(hidden_size, num_classes)
@@ -157,6 +160,8 @@ class FeatureAggregatingLSTM(nn.Module):
         # Unpack sequences back to padded representation
         output_padded, _ = pad_packed_sequence(packed_output, batch_first=True)
         avg_pool = torch.sum(output_padded, dim = 1) / lengths.to(device).unsqueeze(1)
+
+        avg_pool = self.dropout(avg_pool)
         
         logits = self.fc(avg_pool)
         return logits
@@ -265,8 +270,8 @@ def run_training(
             f.flush()
 
     # Final test evaluation after all epochs
-    test_loss, test_acc = evaluate(model, test_generator, device, desc="Test")
-    print(f"Test: loss = {test_loss:.4f}, acc = {test_acc * 100:.2f}%")
+    # test_loss, test_acc = evaluate(model, test_generator, device, desc="Test")
+    # print(f"Test: loss = {test_loss:.4f}, acc = {test_acc * 100:.2f}%")
 
     # Save final model to disk
     final_model_path = weights_dir / f"final_model_epoch_{epochs}.pt"
