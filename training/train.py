@@ -386,7 +386,7 @@ if __name__ == "__main__":
         default=None,
         help=(
             "Path to output CSV file to append training results. "
-            "Default is logs/{datetime}.csv."
+            "Default is logs/training_results_{datetime}.csv."
         ),
     )
     args = parser.parse_args()
