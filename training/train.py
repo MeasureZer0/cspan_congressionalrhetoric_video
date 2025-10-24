@@ -320,8 +320,9 @@ def sequence_accuracy(
     Returns:
         scalar accuracy value over valid positions
     """
-    preds = torch.argmax(logits, dim=1)
-    return (preds == targets).float().mean()
+    with torch.no_grad():
+        preds = torch.argmax(logits, dim=1)
+        return (preds == targets).float().mean()
 
 
 def evaluate(
