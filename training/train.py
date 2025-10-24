@@ -159,10 +159,10 @@ class FeatureAggregatingLSTM(nn.Module):
 
         # Unpack sequences back to padded representation
         output_padded, _ = pad_packed_sequence(packed_output, batch_first=True)
-        avg_pool = torch.sum(output_padded, dim = 1) / lengths.to(device).unsqueeze(1)
+        avg_pool = torch.sum(output_padded, dim=1) / lengths.to(device).unsqueeze(1)
 
         avg_pool = self.dropout(avg_pool)
-        
+
         logits = self.fc(avg_pool)
         return logits
 
@@ -200,11 +200,11 @@ def run_training(
     val_size = int(dataset_size * 0.1)
     test_size = dataset_size - train_size - val_size
 
-    train, val, test = random_split(dataset, [train_size, val_size, test_size])
+    train, val, _ = random_split(dataset, [train_size, val_size, test_size])
 
     training_generator = DataLoader(train, **params)
     validation_generator = DataLoader(val, **params)
-    test_generator = DataLoader(test, **params)
+    # test_generator = DataLoader(test, **params)
 
     model = FeatureAggregatingLSTM(num_classes=3).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
@@ -269,7 +269,7 @@ def run_training(
             writer.writerow([epoch + 1, f"{val_loss:.6f}", f"{val_acc:.6f}"])
             f.flush()
 
-    # Final test evaluation after all epochs
+    # Final test evaluation after all epochs, right not we're not using it
     # test_loss, test_acc = evaluate(model, test_generator, device, desc="Test")
     # print(f"Test: loss = {test_loss:.4f}, acc = {test_acc * 100:.2f}%")
 
@@ -283,15 +283,13 @@ def run_training(
     print(f"Final model saved: {final_model_path}")
 
     # Append final test loss to CSV and flush
-    with open(output_path, "a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["final", f"{test_loss:.6f}", f"{test_acc:.6f}"])
-        f.flush()
+    # with open(output_path, "a", newline="", encoding="utf-8") as f:
+    #     writer = csv.writer(f)
+    #     writer.writerow(["final", f"{test_loss:.6f}", f"{test_acc:.6f}"])
+    #     f.flush()
 
 
-def sequence_loss(
-    logits: torch.Tensor, targets: torch.Tensor
-) -> torch.Tensor:
+def sequence_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
     """
     Computes cross-entropy loss while ignoring padded positions.
 
@@ -306,9 +304,7 @@ def sequence_loss(
     return F.cross_entropy(logits, targets)
 
 
-def sequence_accuracy(
-    logits: torch.Tensor, targets: torch.Tensor
-) -> torch.Tensor:
+def sequence_accuracy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
     """
     Computes accuracy only for non-padded elements.
 
