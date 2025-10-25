@@ -83,6 +83,11 @@ def build_cnn(input_channels: int) -> tuple[nn.Module, int]:
     model.conv1 = nn.Conv2d(
         input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False
     )
+
+    for name, param in model.named_parameters():
+        if not (name.startswith("conv1") or name.startswith("layer4")):
+            param.requires_grad = False
+
     feature_size = model.fc.in_features
     # remove classification layer
     model.fc = nn.Identity()  # type: ignore
