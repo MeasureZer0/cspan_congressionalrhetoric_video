@@ -1,6 +1,7 @@
 import argparse
 import csv
 import os
+import random
 from datetime import datetime
 from pathlib import Path
 
@@ -9,7 +10,7 @@ import torch.nn.functional as F
 from faces_frames_dataset import FacesFramesDataset
 from torch import nn
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence, pad_sequence
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset
 from torchvision.models import ResNet18_Weights, resnet18
 from tqdm import tqdm
 
@@ -172,6 +173,62 @@ class FeatureAggregatingLSTM(nn.Module):
         return logits
 
 
+def stratified_split(
+    dataset: FacesFramesDataset,
+    fractions: tuple[float, float, float],
+) -> tuple[Subset, Subset, Subset]:
+    """
+    Splits the dataset into stratified train, validation, and test subsets.
+
+    Args:
+        dataset: the full dataset to split
+        fractions: list of fractions for each subset (train, val, test), \
+            in our case (0.8, 0.1, 0.1)
+
+    Returns:
+        train: Subset for training
+        val: Subset for validation
+        test: Subset for testing
+    """
+    indices = (
+        [],  # negative
+        [],  # neutral
+        [],  # positive
+    )
+    for i in range(len(dataset)):
+        _, _, label = dataset[i]
+        if label is not None:
+            indices[label].append(i)
+
+    train_indices, val_indices, test_indices = [], [], []
+    cumulative_fractions = [fractions[0], fractions[0] + fractions[1]]
+    for i in range(3):
+        random.shuffle(indices[i])
+        train_indices.extend(
+            indices[i][: int(cumulative_fractions[0] * len(indices[i]))]
+        )
+        val_indices.extend(
+            indices[i][
+                int(cumulative_fractions[0] * len(indices[i])) : int(
+                    cumulative_fractions[1] * len(indices[i])
+                )
+            ]
+        )
+        test_indices.extend(
+            indices[i][int(cumulative_fractions[1] * len(indices[i])) :]
+        )
+
+    for lst in (train_indices, val_indices, test_indices):
+        random.shuffle(lst)
+
+    # Create Subsets for DataLoader
+    train = Subset(dataset, train_indices)
+    val = Subset(dataset, val_indices)
+    test = Subset(dataset, test_indices)
+
+    return train, val, test
+
+
 def run_training(
     *,
     epochs: int = 10,
@@ -200,12 +257,9 @@ def run_training(
     }
 
     dataset = FacesFramesDataset(csv_file, img_dir)
-    dataset_size = len(dataset)
-    train_size = int(dataset_size * 0.8)
-    val_size = int(dataset_size * 0.1)
-    test_size = dataset_size - train_size - val_size
 
-    train, val, _ = random_split(dataset, [train_size, val_size, test_size])
+    # Use stratified split: put around 80% train, 10% val, 10% test
+    train, val, _ = stratified_split(dataset, (0.8, 0.1, 0.1))
 
     training_generator = DataLoader(train, **params)
     validation_generator = DataLoader(val, **params)
