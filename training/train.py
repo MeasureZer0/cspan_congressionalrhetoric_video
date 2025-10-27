@@ -1,6 +1,5 @@
 import argparse
 import csv
-import os
 import random
 from datetime import datetime
 from pathlib import Path
@@ -8,6 +7,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 from faces_frames_dataset import FacesFramesDataset
+from subset_data_multiplier import SubsetDataMultiplier
 from torch import nn
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence, pad_sequence
 from torch.utils.data import DataLoader, Subset
@@ -176,9 +176,9 @@ class FeatureAggregatingLSTM(nn.Module):
 def stratified_split(
     dataset: FacesFramesDataset,
     fractions: tuple[float, float, float],
-) -> tuple[Subset, Subset, Subset]:
+) -> tuple[list[int], list[int], list[int]]:
     """
-    Splits the dataset into stratified train, validation, and test subsets.
+    Splits the dataset into stratified train, validation, and test sets.
 
     Args:
         dataset: the full dataset to split
@@ -186,9 +186,9 @@ def stratified_split(
             in our case (0.8, 0.1, 0.1)
 
     Returns:
-        train: Subset for training
-        val: Subset for validation
-        test: Subset for testing
+        train: List of indices for training
+        val: List of indices for validation
+        test: List of indices for testing
     """
     indices = (
         [],  # negative
@@ -218,21 +218,15 @@ def stratified_split(
             indices[i][int(cumulative_fractions[1] * len(indices[i])) :]
         )
 
-    for lst in (train_indices, val_indices, test_indices):
-        random.shuffle(lst)
-
-    # Create Subsets for DataLoader
-    train = Subset(dataset, train_indices)
-    val = Subset(dataset, val_indices)
-    test = Subset(dataset, test_indices)
-
-    return train, val, test
+    return train_indices, val_indices, test_indices
 
 
 def run_training(
     *,
     epochs: int = 10,
     batch_size: int = 2,
+    data_multiplier: int = 1,
+    augmentation_strength: str = "standard",
     output_csv: Path | str | None = None,
 ) -> None:
     """
@@ -256,13 +250,27 @@ def run_training(
         "collate_fn": collate_fn,
     }
 
-    dataset = FacesFramesDataset(csv_file, img_dir)
+    original_dataset = FacesFramesDataset(csv_file, img_dir)
 
     # Use stratified split: put around 80% train, 10% val, 10% test
-    train, val, _ = stratified_split(dataset, (0.8, 0.1, 0.1))
+    train_indices, val_indices, _ = stratified_split(original_dataset, (0.8, 0.1, 0.1))
 
-    training_generator = DataLoader(train, **params)
-    validation_generator = DataLoader(val, **params)
+    print(f"Original dataset: {len(original_dataset)} samples")
+    print(f"Train split: {len(train_indices)} samples")
+
+    train_dataset = SubsetDataMultiplier(
+        csv_file=csv_file,
+        img_dir=img_dir,
+        train_indices=train_indices,
+        multiplier=data_multiplier,
+        augmentation_strength=augmentation_strength,
+    )
+
+    print(f"Training samples (after multiplication): {len(train_dataset)}")
+    print(f"Validation samples: {len(val_indices)}")
+
+    training_generator = DataLoader(train_dataset, **params)
+    validation_generator = DataLoader(Subset(original_dataset, val_indices), **params)
     # test_generator = DataLoader(test, **params)
 
     model = FeatureAggregatingLSTM(num_classes=3).to(device)
@@ -285,7 +293,6 @@ def run_training(
             writer = csv.writer(f)
             writer.writerow(["epoch", "val_loss", "val_acc"])
             f.flush()
-            os.fsync(f.fileno())
 
     for epoch in range(epochs):
         model.train()
@@ -429,6 +436,20 @@ if __name__ == "__main__":
         help="Batch size for training.",
     )
     parser.add_argument(
+        "--data-multiplier",
+        type=int,
+        default=1,
+        help="How many versions of each video used for training (default: 1 = \
+              no extra data).",
+    )
+    parser.add_argument(
+        "--augmentation",
+        type=str,
+        default="standard",
+        choices=["light", "standard", "heavy"],
+        help="Augmentation strength (default: standard).",
+    )
+    parser.add_argument(
         "--output-csv",
         type=str,
         default=None,
@@ -442,5 +463,7 @@ if __name__ == "__main__":
     run_training(
         epochs=args.epochs,
         batch_size=args.batch_size,
+        data_multiplier=args.data_multiplier,
+        augmentation_strength=args.augmentation,
         output_csv=args.output_csv,
     )
