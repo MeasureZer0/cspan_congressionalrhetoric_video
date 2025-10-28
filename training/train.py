@@ -104,7 +104,7 @@ class FeatureAggregatingLSTM(nn.Module):
     """
 
     def __init__(
-        self, hidden_size: int = 128, num_layers: int = 5, num_classes: int = 3
+        self, hidden_size: int = 64, num_layers: int = 1, num_classes: int = 3
     ) -> None:
         super().__init__()
         # Separate ResNet extractors for RGB frames and optical flow
@@ -118,10 +118,10 @@ class FeatureAggregatingLSTM(nn.Module):
             num_layers=num_layers,
             batch_first=True,
             bidirectional=False,
-            dropout=0.3,
+            dropout=0.0,
         )
 
-        self.dropout = nn.Dropout(0.3)
+        self.dropout = nn.Dropout(0.4)
 
         # Final linear layer for classification at each time step
         self.fc = nn.Linear(hidden_size, num_classes)
@@ -142,7 +142,7 @@ class FeatureAggregatingLSTM(nn.Module):
             lengths: tensor with the actual lengths of each sequence in the batch
 
         Returns:
-            logits: tensor of shape [B, T, num_classes]
+            logits: tensor of shape [B, num_classes]
         """
         features = []
         device = next(self.parameters()).device
