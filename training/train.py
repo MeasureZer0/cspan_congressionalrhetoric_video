@@ -252,26 +252,29 @@ def run_training(
 
     original_dataset = FacesFramesDataset(csv_file, img_dir)
 
-    # Use stratified split: put around 80% train, 10% val, 10% test
-    train_indices, val_indices, _ = stratified_split(original_dataset, (0.8, 0.1, 0.1))
+    # Use stratified split: put around 60% train, 20% val, 20% test
+    train_indices, val_indices, _ = stratified_split(original_dataset, (0.6, 0.2, 0.2))
 
     print(f"Original dataset: {len(original_dataset)} samples")
     print(f"Train split: {len(train_indices)} samples")
 
-    train_dataset = SubsetDataMultiplier(
-        csv_file=csv_file,
-        img_dir=img_dir,
-        train_indices=train_indices,
-        multiplier=data_multiplier,
-        augmentation_strength=augmentation_strength,
-    )
+    if data_multiplier > 1:
+        train_dataset = SubsetDataMultiplier(
+            csv_file=csv_file,
+            img_dir=img_dir,
+            train_indices=train_indices,
+            multiplier=data_multiplier,
+            augmentation_strength=augmentation_strength,
+        )
+    else:
+        train_dataset = Subset(original_dataset, train_indices)
 
     print(f"Training samples (after multiplication): {len(train_dataset)}")
     print(f"Validation samples: {len(val_indices)}")
 
     training_generator = DataLoader(train_dataset, **params)
     validation_generator = DataLoader(Subset(original_dataset, val_indices), **params)
-    # test_generator = DataLoader(test, **params)
+    # test_generator = DataLoader(Subset(original_dataset, test_indices), **params)
 
     model = FeatureAggregatingLSTM(num_classes=3).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
