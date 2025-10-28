@@ -125,12 +125,12 @@ class VideoAugmentation:
                 # Resize first
                 face_frame = TF.resize(
                     face_frame,
-                    (new_h, new_w),
+                    [new_h, new_w],
                     interpolation=TF.InterpolationMode.BILINEAR,
                 )
                 flow_frame = TF.resize(
                     flow_frame,
-                    (new_h, new_w),
+                    [new_h, new_w],
                     interpolation=TF.InterpolationMode.BILINEAR,
                 )
 

@@ -27,7 +27,7 @@ class SubsetDataMultiplier(Dataset):
         csv_file: Path,
         img_dir: Path,
         train_indices: List[int],
-        multiplier: int = 4,
+        multiplier: int = 2,
         augmentation_strength: str = "standard",
         include_original: bool = True,
     ) -> None:

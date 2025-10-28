@@ -235,7 +235,12 @@ def run_training(
     Args:
         epochs: number of training epochs
         batch_size: batch size for training
+        data_multiplier: how many versions of each video used for training
+        augmentation_strength: "light", "standard", or "heavy"
+        output_csv: path to output CSV file to append training results
     """
+
+    assert 1 <= data_multiplier <= 2, "data_multiplier must be 1 or and 2"
 
     device = _get_device()
     torch.manual_seed(2)

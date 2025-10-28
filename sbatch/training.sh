@@ -15,7 +15,7 @@ module load python/seminar r/seminar
 cd $SLURM_SUBMIT_DIR
 
 # -u to disable stdout buffering
-python3 -u training/train.py --epochs 50 --batch-size 2 --data-multiplier 3 >logs/training_${SLURM_JOBID}.log 2>logs/training_${SLURM_JOBID}.err
+python3 -u training/train.py --epochs 50 --batch-size 2 --data-multiplier 2 >logs/training_${SLURM_JOBID}.log 2>logs/training_${SLURM_JOBID}.err
 
 # Make sure you run sbatch from the root of the project!
 # sbatch commands:
