@@ -6,7 +6,7 @@ and optical flow data while maintaining consistency between them.
 """
 
 import random
-from typing import Optional, Tuple
+from typing import Tuple
 
 import torch
 import torchvision.transforms as T
@@ -28,8 +28,6 @@ class VideoAugmentation:
         contrast: float = 0.2,
         saturation: float = 0.2,
         hue: float = 0.1,
-        crop_size: Optional[Tuple[int, int]] = None,
-        scale_range: Tuple[float, float] = (0.8, 1.2),
         probability: float = 0.5,
     ) -> None:
         """
@@ -53,8 +51,6 @@ class VideoAugmentation:
         self.contrast = contrast
         self.saturation = saturation
         self.hue = hue
-        self.crop_size = crop_size
-        self.scale_range = scale_range
         self.probability = probability
 
         # Color jitter transform (only for face images, not optical flow)
@@ -83,24 +79,6 @@ class VideoAugmentation:
 
         # Generate random parameters for consistent application
         angle = random.uniform(-self.rotation_degrees, self.rotation_degrees)
-        scale = random.uniform(*self.scale_range)
-
-        # For random crop, we need to determine
-        # crop parameters if crop_size is specified
-        crop_params = None
-        if self.crop_size is not None:
-            crop_h, crop_w = self.crop_size
-            # Scale the image first
-            new_h, new_w = int(h * scale), int(w * scale)
-
-            # Make sure crop size is not larger than scaled image
-            crop_h = min(crop_h, new_h)
-            crop_w = min(crop_w, new_w)
-
-            # Random crop position
-            top = random.randint(0, max(0, new_h - crop_h))
-            left = random.randint(0, max(0, new_w - crop_w))
-            crop_params = (top, left, crop_h, crop_w, new_h, new_w)
 
         # Apply transforms to each frame
         augmented_faces = []
@@ -117,34 +95,6 @@ class VideoAugmentation:
             flow_frame = TF.rotate(
                 flow_frame, angle, interpolation=TF.InterpolationMode.BILINEAR
             )
-
-            # Apply scaling and cropping if specified
-            if crop_params is not None:
-                top, left, crop_h, crop_w, new_h, new_w = crop_params
-
-                # Resize first
-                face_frame = TF.resize(
-                    face_frame,
-                    [new_h, new_w],
-                    interpolation=TF.InterpolationMode.BILINEAR,
-                )
-                flow_frame = TF.resize(
-                    flow_frame,
-                    [new_h, new_w],
-                    interpolation=TF.InterpolationMode.BILINEAR,
-                )
-
-                # Then crop
-                face_frame = TF.crop(face_frame, top, left, crop_h, crop_w)
-                flow_frame = TF.crop(flow_frame, top, left, crop_h, crop_w)
-
-                # Resize back to original size
-                face_frame = TF.resize(
-                    face_frame, [h, w], interpolation=TF.InterpolationMode.BILINEAR
-                )
-                flow_frame = TF.resize(
-                    flow_frame, [h, w], interpolation=TF.InterpolationMode.BILINEAR
-                )
 
             # Apply color jitter only to face images (not to optical flow)
             face_frame = self.color_jitter(face_frame)

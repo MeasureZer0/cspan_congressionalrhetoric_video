@@ -244,6 +244,7 @@ def run_training(
 
     device = _get_device()
     torch.manual_seed(2)
+    random.seed(2)
 
     # Resolve default paths if not provided
     img_dir, csv_file, weights_dir, logs_dir = _default_paths()
