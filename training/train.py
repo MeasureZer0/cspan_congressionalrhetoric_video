@@ -118,7 +118,7 @@ class FeatureAggregatingLSTM(nn.Module):
             num_layers=num_layers,
             batch_first=True,
             bidirectional=False,
-            dropout=0.0,
+            dropout=0.5 if num_layers > 1 else 0.0,
         )
 
         self.dropout = nn.Dropout(0.4)
@@ -283,7 +283,7 @@ def run_training(
     # test_generator = DataLoader(Subset(original_dataset, test_indices), **params)
 
     model = FeatureAggregatingLSTM(num_classes=3).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=5e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-3)
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
 
