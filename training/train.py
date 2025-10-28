@@ -53,7 +53,7 @@ def collate_fn(
     # NOTE: do not move device resolution to module scope; resolve at call time
     batch_image = [item[0] for item in batch]
     batch_flow = [item[1] for item in batch]
-    labels = torch.stack([item[2] for item in batch])
+    labels = torch.stack([item[2] for item in batch]).long()
     lengths = torch.tensor([seq.shape[0] for seq in batch_image], dtype=torch.long)
     return batch_image, batch_flow, labels, lengths
 
@@ -305,7 +305,9 @@ def run_training(
 
     for epoch in range(epochs):
         model.train()
-        total_loss, total_acc = 0.0, 0.0
+        total_loss = 0.0
+        total_correct = 0
+        total_samples = 0
         for batch_image, batch_flow, labels, lengths in tqdm(
             training_generator, desc=f"Epoch {epoch + 1}"
         ):
@@ -314,16 +316,16 @@ def run_training(
             logits = model(batch_image, batch_flow, lengths)
 
             loss = sequence_loss(logits, labels)
-            acc = sequence_accuracy(logits, labels)
+            batch_correct, batch_total = sequence_accuracy(logits, labels)
 
             loss.backward()
             optimizer.step()
 
-            total_loss += loss.item()
-            total_acc += acc.item()
-
-        avg_train_loss = total_loss / len(training_generator)
-        avg_train_acc = total_acc / len(training_generator)
+            total_loss += loss.item() * labels.size(0)
+            total_correct += batch_correct
+            total_samples += batch_total
+        avg_train_loss = total_loss / total_samples
+        avg_train_acc = total_correct / total_samples
         print(
             f"Epoch {epoch + 1}: train loss = {avg_train_loss:.4f}, "
             f"acc = {avg_train_acc:.4f}"
@@ -369,9 +371,8 @@ def sequence_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
     Computes cross-entropy loss while ignoring padded positions.
 
     Args:
-        logits: tensor [B, T, num_classes]
-        targets: tensor [B, T] with true class indices
-        lengths: tensor [B] with sequence lengths
+        logits: tensor [B, um_classes]
+        targets: tensor [B] with true class indices
 
     Returns:
         scalar average loss over valid time steps
@@ -384,16 +385,16 @@ def sequence_accuracy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tens
     Computes accuracy only for non-padded elements.
 
     Args:
-        logits: tensor [B, T, num_classes]
-        targets: tensor [B, T]
-        lengths: tensor [B]
-
+        logits: tensor [B, num_classes]
+        targets: tensor [B]
     Returns:
         scalar accuracy value over valid positions
     """
     with torch.no_grad():
         preds = torch.argmax(logits, dim=1)
-        return (preds == targets).float().mean()
+        correct = (preds == targets).sum().item()
+        total = targets.shape[0]
+        return correct, total
 
 
 def evaluate(
@@ -413,18 +414,21 @@ def evaluate(
         avg_acc: average masked accuracy
     """
     model.eval()
-    total_loss, total_acc = 0.0, 0.0
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
     with torch.no_grad():
         for batch_image, batch_flow, labels, lengths in tqdm(dataloader, desc=desc):
             labels = labels.to(device)
             logits = model(batch_image, batch_flow, lengths)
             loss = sequence_loss(logits, labels)
-            acc = sequence_accuracy(logits, labels)
-            total_loss += loss.item()
-            total_acc += acc.item()
+            batch_correct, batch_total = sequence_accuracy(logits, labels)
+            total_loss += loss.item() * batch_total
+            total_correct += batch_correct
+            total_samples += batch_total
 
-    avg_loss = total_loss / len(dataloader)
-    avg_acc = total_acc / len(dataloader)
+    avg_loss = total_loss / total_samples
+    avg_acc = total_correct / total_samples
     return avg_loss, avg_acc
 
 
