@@ -283,7 +283,9 @@ def run_training(
     # test_generator = DataLoader(Subset(original_dataset, test_indices), **params)
 
     model = FeatureAggregatingLSTM(num_classes=3).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=5e-4)
+
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
 
     # Prepare output CSV path
     if output_csv is None:
@@ -338,6 +340,7 @@ def run_training(
             device,
             desc="Validation",
         )
+        scheduler.step(val_loss)
         print(f"Validation: loss = {val_loss:.4f}, acc = {val_acc * 100:.2f}%")
 
         # Append epoch validation loss to CSV and flush to disk
