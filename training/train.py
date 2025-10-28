@@ -1,15 +1,16 @@
 import argparse
 import csv
-import os
+import random
 from datetime import datetime
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 from faces_frames_dataset import FacesFramesDataset
+from subset_data_multiplier import SubsetDataMultiplier
 from torch import nn
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence, pad_sequence
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset
 from torchvision.models import ResNet18_Weights, resnet18
 from tqdm import tqdm
 
@@ -172,10 +173,60 @@ class FeatureAggregatingLSTM(nn.Module):
         return logits
 
 
+def stratified_split(
+    dataset: FacesFramesDataset,
+    fractions: tuple[float, float, float],
+) -> tuple[list[int], list[int], list[int]]:
+    """
+    Splits the dataset into stratified train, validation, and test sets.
+
+    Args:
+        dataset: the full dataset to split
+        fractions: list of fractions for each subset (train, val, test), \
+            in our case (0.8, 0.1, 0.1)
+
+    Returns:
+        train: List of indices for training
+        val: List of indices for validation
+        test: List of indices for testing
+    """
+    indices = (
+        [],  # negative
+        [],  # neutral
+        [],  # positive
+    )
+    for i in range(len(dataset)):
+        _, _, label = dataset[i]
+        if label is not None:
+            indices[label].append(i)
+
+    train_indices, val_indices, test_indices = [], [], []
+    cumulative_fractions = [fractions[0], fractions[0] + fractions[1]]
+    for i in range(3):
+        random.shuffle(indices[i])
+        train_indices.extend(
+            indices[i][: int(cumulative_fractions[0] * len(indices[i]))]
+        )
+        val_indices.extend(
+            indices[i][
+                int(cumulative_fractions[0] * len(indices[i])) : int(
+                    cumulative_fractions[1] * len(indices[i])
+                )
+            ]
+        )
+        test_indices.extend(
+            indices[i][int(cumulative_fractions[1] * len(indices[i])) :]
+        )
+
+    return train_indices, val_indices, test_indices
+
+
 def run_training(
     *,
     epochs: int = 10,
     batch_size: int = 2,
+    data_multiplier: int = 1,
+    augmentation_strength: str = "standard",
     output_csv: Path | str | None = None,
 ) -> None:
     """
@@ -184,10 +235,16 @@ def run_training(
     Args:
         epochs: number of training epochs
         batch_size: batch size for training
+        data_multiplier: how many versions of each video used for training
+        augmentation_strength: "light", "standard", or "heavy"
+        output_csv: path to output CSV file to append training results
     """
+
+    assert 1 <= data_multiplier <= 2, "data_multiplier must be 1 or and 2"
 
     device = _get_device()
     torch.manual_seed(2)
+    random.seed(2)
 
     # Resolve default paths if not provided
     img_dir, csv_file, weights_dir, logs_dir = _default_paths()
@@ -199,17 +256,31 @@ def run_training(
         "collate_fn": collate_fn,
     }
 
-    dataset = FacesFramesDataset(csv_file, img_dir)
-    dataset_size = len(dataset)
-    train_size = int(dataset_size * 0.8)
-    val_size = int(dataset_size * 0.1)
-    test_size = dataset_size - train_size - val_size
+    original_dataset = FacesFramesDataset(csv_file, img_dir)
 
-    train, val, _ = random_split(dataset, [train_size, val_size, test_size])
+    # Use stratified split: put around 60% train, 20% val, 20% test
+    train_indices, val_indices, _ = stratified_split(original_dataset, (0.6, 0.2, 0.2))
 
-    training_generator = DataLoader(train, **params)
-    validation_generator = DataLoader(val, **params)
-    # test_generator = DataLoader(test, **params)
+    print(f"Original dataset: {len(original_dataset)} samples")
+    print(f"Train split: {len(train_indices)} samples")
+
+    if data_multiplier > 1:
+        train_dataset = SubsetDataMultiplier(
+            csv_file=csv_file,
+            img_dir=img_dir,
+            train_indices=train_indices,
+            multiplier=data_multiplier,
+            augmentation_strength=augmentation_strength,
+        )
+    else:
+        train_dataset = Subset(original_dataset, train_indices)
+
+    print(f"Training samples (after multiplication): {len(train_dataset)}")
+    print(f"Validation samples: {len(val_indices)}")
+
+    training_generator = DataLoader(train_dataset, **params)
+    validation_generator = DataLoader(Subset(original_dataset, val_indices), **params)
+    # test_generator = DataLoader(Subset(original_dataset, test_indices), **params)
 
     model = FeatureAggregatingLSTM(num_classes=3).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
@@ -231,7 +302,6 @@ def run_training(
             writer = csv.writer(f)
             writer.writerow(["epoch", "val_loss", "val_acc"])
             f.flush()
-            os.fsync(f.fileno())
 
     for epoch in range(epochs):
         model.train()
@@ -375,6 +445,20 @@ if __name__ == "__main__":
         help="Batch size for training.",
     )
     parser.add_argument(
+        "--data-multiplier",
+        type=int,
+        default=1,
+        help="How many versions of each video used for training (default: 1 = \
+              no extra data).",
+    )
+    parser.add_argument(
+        "--augmentation",
+        type=str,
+        default="standard",
+        choices=["light", "standard", "heavy"],
+        help="Augmentation strength (default: standard).",
+    )
+    parser.add_argument(
         "--output-csv",
         type=str,
         default=None,
@@ -388,5 +472,7 @@ if __name__ == "__main__":
     run_training(
         epochs=args.epochs,
         batch_size=args.batch_size,
+        data_multiplier=args.data_multiplier,
+        augmentation_strength=args.augmentation,
         output_csv=args.output_csv,
     )

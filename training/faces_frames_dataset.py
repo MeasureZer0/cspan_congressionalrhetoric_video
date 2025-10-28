@@ -1,13 +1,16 @@
 import os
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Tuple
 
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-# Define transform type
+# Define transform types
 Transform = Optional[Callable[[Any], Any]]
+VideoTransform = Optional[
+    Callable[[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]
+]
 
 
 class FacesFramesDataset(Dataset):
@@ -22,6 +25,7 @@ class FacesFramesDataset(Dataset):
         img_dir: Path,
         transform: Transform = None,
         target_transform: Transform = None,
+        video_transform: VideoTransform = None,
     ) -> None:
         """
         Args:
@@ -29,6 +33,8 @@ class FacesFramesDataset(Dataset):
             img_dir (Path): Directory with preprocessed .pt face tensors.
             transform (callable, optional): Optional transform to apply to face tensors.
             target_transform (callable, optional): Optional transform applied to labels.
+            video_transform (callable, optional): Optional transform that takes both
+                faces and flows tensors and returns augmented versions.
         """
         # Load CSV with labels
         self.csv_file = pd.read_csv(csv_file)
@@ -39,6 +45,7 @@ class FacesFramesDataset(Dataset):
         # Optional transformations for input and target
         self.transform = transform
         self.target_transform = target_transform
+        self.video_transform = video_transform
 
         # Mapping string labels to integer classes
         # Needed because models expect numeric labels
@@ -75,7 +82,11 @@ class FacesFramesDataset(Dataset):
         # Load and convert string label to tensor
         label = torch.tensor(self.classes[label_str], dtype=torch.long)
 
-        # Apply optional transformations to faces tensor
+        # Apply video-level augmentations first (affects both faces and flows)
+        if self.video_transform:
+            faces, flows = self.video_transform(faces, flows)
+
+        # Apply optional transformations to faces tensor only
         if self.transform:
             faces = self.transform(faces)
 
