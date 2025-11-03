@@ -67,7 +67,7 @@ params = {
 }
 
 
-def build_cnn(input_channels: int) -> tuple[nn.Module, int]:
+def build_resnet_cnn(input_channels: int) -> tuple[nn.Module, int]:
     """
     Builds a ResNet model that can process images with an arbitrary number of channels.
     The final fully connected layer is replaced with an identity to \
@@ -95,6 +95,36 @@ def build_cnn(input_channels: int) -> tuple[nn.Module, int]:
     # model will be moved to the target device by the caller (e.g. model.to(device))
     return model, feature_size
 
+def build_small_cnn(input_channels: int) -> tuple[nn.Module, int]:
+    """
+    Builds a small CNN model that can process images with an arbitrary number of channels.
+
+    Args:
+        input_channels: number of input channels (e.g., 3 for RGB, 2 for optical flow)
+
+    Returns:
+        model: CNN feature extractor
+        feature_size: dimensionality of the extracted feature vector
+    """
+    model = nn.Sequential(
+        nn.Conv2d(input_channels, 32, kernel_size = 3, stride = 1, padding = 1),
+        nn.BatchNorm2d(32),
+        nn.ReLU(),
+        nn.MaxPool2d(2),
+
+        nn.Conv2d(32, 64, kernel_size = 3, stride = 1, padding = 1),
+        nn.BatchNorm2d(64),
+        nn.ReLU(),
+        nn.MaxPool2d(2),
+
+        nn.Conv2d(64, 128, kernel_size = 3, stride = 1, padding = 1),
+        nn.BatchNorm2d(128),
+        nn.ReLU(),
+        nn.AdaptiveAvgPool2d((1, 1)),
+        nn.Flatten(),
+    )
+    feature_size = 128
+    return model, feature_size
 
 class FeatureAggregatingLSTM(nn.Module):
     """
@@ -104,12 +134,19 @@ class FeatureAggregatingLSTM(nn.Module):
     """
 
     def __init__(
-        self, hidden_size: int = 64, num_layers: int = 1, num_classes: int = 3
+        self, hidden_size: int = 64, num_layers: int = 1, num_classes: int = 3, cnn_type: str = "resnet"
     ) -> None:
         super().__init__()
-        # Separate ResNet extractors for RGB frames and optical flow
-        self.image_extractor, feature_size = build_cnn(3)
-        self.flow_extractor, _ = build_cnn(2)
+
+        # Separate CNN extractors for RGB frames and optical flow
+        if cnn_type == "resnet":
+            self.image_extractor, feature_size = build_resnet_cnn(3)
+            self.flow_extractor, _ = build_resnet_cnn(2)
+        elif cnn_type == "small":
+            self.image_extractor, feature_size = build_small_cnn(3)
+            self.flow_extractor, _ = build_small_cnn(2)
+        else:
+            raise ValueError(f"Unknown cnn_type: {cnn_type}")
 
         # LSTM processes the concatenated feature vectors over time
         self.lstm = nn.LSTM(
@@ -228,6 +265,7 @@ def run_training(
     data_multiplier: int = 1,
     augmentation_strength: str = "standard",
     output_csv: Path | str | None = None,
+    cnn_type: str = "resnet",
 ) -> None:
     """
     Run the full training loop.
@@ -282,7 +320,7 @@ def run_training(
     validation_generator = DataLoader(Subset(original_dataset, val_indices), **params)
     # test_generator = DataLoader(Subset(original_dataset, test_indices), **params)
 
-    model = FeatureAggregatingLSTM(num_classes=3).to(device)
+    model = FeatureAggregatingLSTM(num_classes=3, cnn_type=cnn_type).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-3)
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
@@ -474,6 +512,13 @@ if __name__ == "__main__":
             "Default is logs/training_results_{datetime}.csv."
         ),
     )
+    parser.add_argument(
+        "--cnn-type",
+        type=str,
+        default="resnet",
+        choices=["resnet", "small"],
+        help="Type of CNN: 'resnet' (pretrained) or 'small' (custom lightweight CNN).",
+    )
     args = parser.parse_args()
 
     run_training(
@@ -482,4 +527,5 @@ if __name__ == "__main__":
         data_multiplier=args.data_multiplier,
         augmentation_strength=args.augmentation,
         output_csv=args.output_csv,
+        cnn_type=args.cnn_type,
     )
