@@ -140,9 +140,11 @@ class FeatureAggregatingLSTM(nn.Module):
 
         # Separate CNN extractors for RGB frames and optical flow
         if cnn_type == "resnet":
+            print(f"CNN MODEL: {cnn_type}")
             self.image_extractor, feature_size = build_resnet_cnn(3)
             self.flow_extractor, _ = build_resnet_cnn(2)
         elif cnn_type == "small":
+            print(f"CNN MODEL: {cnn_type}")
             self.image_extractor, feature_size = build_small_cnn(3)
             self.flow_extractor, _ = build_small_cnn(2)
         else:
@@ -313,7 +315,7 @@ def run_training(
     else:
         train_dataset = Subset(original_dataset, train_indices)
 
-    print(f"Training samples (after multiplication): {len(train_dataset)}")
+    print(f"Training samples (after augmentation): {len(train_dataset)}")
     print(f"Validation samples: {len(val_indices)}")
 
     training_generator = DataLoader(train_dataset, **params)
