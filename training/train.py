@@ -81,12 +81,13 @@ def build_resnet_cnn(input_channels: int) -> tuple[nn.Module, int]:
         feature_size: dimensionality of the extracted feature vector
     """
     model = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
-    model.conv1 = nn.Conv2d(
-        input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False
-    )
+    if input_channels == 2:
+        model.conv1 = nn.Conv2d(
+            input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False
+        )
 
     for name, param in model.named_parameters():
-        if not (name.startswith("conv1") or name.startswith("layer4")):
+        if not ((name.startswith("conv1") and input_channels == 2) or name.startswith("layer4")):
             param.requires_grad = False
 
     feature_size = model.fc.in_features
@@ -134,7 +135,7 @@ class FeatureAggregatingLSTM(nn.Module):
     """
 
     def __init__(
-        self, hidden_size: int = 16, num_layers: int = 1, num_classes: int = 3, cnn_type: str = "resnet"
+        self, hidden_size: int = 8, num_layers: int = 1, num_classes: int = 3, cnn_type: str = "resnet"
     ) -> None:
         super().__init__()
 
