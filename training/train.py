@@ -134,7 +134,7 @@ class FeatureAggregatingLSTM(nn.Module):
     """
 
     def __init__(
-        self, hidden_size: int = 32, num_layers: int = 1, num_classes: int = 3, cnn_type: str = "resnet"
+        self, hidden_size: int = 16, num_layers: int = 1, num_classes: int = 3, cnn_type: str = "resnet"
     ) -> None:
         super().__init__()
 
