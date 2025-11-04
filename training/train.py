@@ -297,7 +297,7 @@ def run_training(
     original_dataset = FacesFramesDataset(csv_file, img_dir)
 
     # Use stratified split: put around 60% train, 20% val, 20% test
-    train_indices, val_indices, _ = stratified_split(original_dataset, (0.6, 0.2, 0.2))
+    train_indices, val_indices, _ = stratified_split(original_dataset, (0.8, 0.2, 0.0))
 
     print(f"Original dataset: {len(original_dataset)} samples")
     print(f"Train split: {len(train_indices)} samples")
