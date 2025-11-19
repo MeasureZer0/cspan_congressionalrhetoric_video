@@ -136,7 +136,7 @@ class FeatureAggregatingLSTM(nn.Module):
     """
 
     def __init__(
-        self, hidden_size: int = 8, num_layers: int = 1, num_classes: int = 3, cnn_type: str = "resnet"
+        self, hidden_size: int = 8, num_layers: int = 1, num_classes: int = 3, cnn_type: str = "resnet", projection_dim = 64
     ) -> None:
         super().__init__()
 
@@ -151,10 +151,15 @@ class FeatureAggregatingLSTM(nn.Module):
             self.flow_extractor, _ = build_small_cnn(2)
         else:
             raise ValueError(f"Unknown cnn_type: {cnn_type}")
-
+        self.projection = nn.Sequential(
+            nn.Linear(2 * feature_size, projection_dim),
+            nn.LayerNorm(projection_dim), 
+            nn.ReLU(),
+            nn.Dropout(0.5) 
+        )
         # LSTM processes the concatenated feature vectors over time
         self.lstm = nn.LSTM(
-            2 * feature_size, # 2 * feature_size,
+            projection_dim, # 2 * feature_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
@@ -194,7 +199,8 @@ class FeatureAggregatingLSTM(nn.Module):
             image_features = self.image_extractor(seq_image)  # [T, feat_dim]
             flow_features = self.flow_extractor(seq_flow)  # [T, feat_dim]
             seq_features = torch.cat([image_features, flow_features], dim=1)
-            features.append(seq_features) # seq_features
+            projected = self.projection(seq_features)
+            features.append(projected) # seq_features
 
         # Pad sequences to the same length
         padded = pad_sequence(features, batch_first=True)
