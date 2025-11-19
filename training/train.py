@@ -143,7 +143,7 @@ class FeatureAggregatingLSTM(nn.Module):
         if cnn_type == "resnet":
             print(f"CNN MODEL: {cnn_type}")
             self.image_extractor, feature_size = build_resnet_cnn(3)
-            self.flow_extractor, _ = build_resnet_cnn(2)
+            # self.flow_extractor, _ = build_resnet_cnn(2)
         elif cnn_type == "small":
             print(f"CNN MODEL: {cnn_type}")
             self.image_extractor, feature_size = build_small_cnn(3)
@@ -153,7 +153,7 @@ class FeatureAggregatingLSTM(nn.Module):
 
         # LSTM processes the concatenated feature vectors over time
         self.lstm = nn.LSTM(
-            2 * feature_size,
+            feature_size, # 2 * feature_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
@@ -191,9 +191,9 @@ class FeatureAggregatingLSTM(nn.Module):
             seq_image = seq_image.to(device)
             seq_flow = seq_flow.to(device)
             image_features = self.image_extractor(seq_image)  # [T, feat_dim]
-            flow_features = self.flow_extractor(seq_flow)  # [T, feat_dim]
-            seq_features = torch.cat([image_features, flow_features], dim=1)
-            features.append(seq_features)
+            # flow_features = self.flow_extractor(seq_flow)  # [T, feat_dim]
+            # seq_features = torch.cat([image_features, flow_features], dim=1)
+            features.append(image_features) # seq_features
 
         # Pad sequences to the same length
         padded = pad_sequence(features, batch_first=True)
