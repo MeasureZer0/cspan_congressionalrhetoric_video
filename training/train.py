@@ -22,11 +22,11 @@ def _get_device() -> torch.device:
     return torch.device("cuda:0" if use_cuda else "cpu")
 
 
-def _default_paths() -> tuple[Path, Path, Path, Path]:
+def _default_paths(frame_skip: int) -> tuple[Path, Path, Path, Path]:
     """Return default (img_dir, csv_file, weights_dir, logs_dir) paths."""
     script_dir = Path(__file__).resolve().parent
     project_root = script_dir.parent
-    data_dir = project_root / "data"  # Main data folder
+    data_dir = project_root / "data" / f"frame_skip_{frame_skip}"  # Main data folder
     img_dir = data_dir / "faces"  # Directory containing image sequences
     csv_file = data_dir / "labels.csv"  # CSV file with labels for each sequence
     weights_dir = data_dir / "weights"  # Directory to save model weights to
@@ -87,7 +87,10 @@ def build_resnet_cnn(input_channels: int) -> tuple[nn.Module, int]:
         )
 
     for name, param in model.named_parameters():
-        if not ((name.startswith("conv1") and input_channels == 2) or name.startswith("layer4")):
+        if not (
+            (name.startswith("conv1") and input_channels == 2)
+            or name.startswith("layer4")
+        ):
             param.requires_grad = False
 
     feature_size = model.fc.in_features
@@ -95,6 +98,7 @@ def build_resnet_cnn(input_channels: int) -> tuple[nn.Module, int]:
     model.fc = nn.Identity()  # type: ignore
     # model will be moved to the target device by the caller (e.g. model.to(device))
     return model, feature_size
+
 
 def build_small_cnn(input_channels: int) -> tuple[nn.Module, int]:
     """
@@ -108,17 +112,15 @@ def build_small_cnn(input_channels: int) -> tuple[nn.Module, int]:
         feature_size: dimensionality of the extracted feature vector
     """
     model = nn.Sequential(
-        nn.Conv2d(input_channels, 32, kernel_size = 3, stride = 1, padding = 1),
+        nn.Conv2d(input_channels, 32, kernel_size=3, stride=1, padding=1),
         nn.BatchNorm2d(32),
         nn.ReLU(),
         nn.MaxPool2d(2),
-
-        nn.Conv2d(32, 64, kernel_size = 3, stride = 1, padding = 1),
+        nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
         nn.BatchNorm2d(64),
         nn.ReLU(),
         nn.MaxPool2d(2),
-
-        nn.Conv2d(64, 128, kernel_size = 3, stride = 1, padding = 1),
+        nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
         nn.BatchNorm2d(128),
         nn.ReLU(),
         nn.AdaptiveAvgPool2d((1, 1)),
@@ -126,6 +128,7 @@ def build_small_cnn(input_channels: int) -> tuple[nn.Module, int]:
     )
     feature_size = 128
     return model, feature_size
+
 
 class FeatureAggregatingLSTM(nn.Module):
     """
@@ -135,7 +138,11 @@ class FeatureAggregatingLSTM(nn.Module):
     """
 
     def __init__(
-        self, hidden_size: int = 8, num_layers: int = 1, num_classes: int = 3, cnn_type: str = "resnet"
+        self,
+        hidden_size: int = 8,
+        num_layers: int = 1,
+        num_classes: int = 3,
+        cnn_type: str = "resnet",
     ) -> None:
         super().__init__()
 
@@ -263,6 +270,7 @@ def stratified_split(
 
 def run_training(
     *,
+    frame_skip: int = 30,
     epochs: int = 10,
     batch_size: int = 2,
     data_multiplier: int = 1,
@@ -288,7 +296,7 @@ def run_training(
     random.seed(2)
 
     # Resolve default paths if not provided
-    img_dir, csv_file, weights_dir, logs_dir = _default_paths()
+    img_dir, csv_file, weights_dir, logs_dir = _default_paths(frame_skip=frame_skip)
 
     params = {
         "batch_size": batch_size,
@@ -326,7 +334,9 @@ def run_training(
     model = FeatureAggregatingLSTM(num_classes=3, cnn_type=cnn_type).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-3)
 
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=3
+    )
 
     # Prepare output CSV path
     if output_csv is None:
@@ -481,6 +491,12 @@ if __name__ == "__main__":
         description=("Train the video classification model.")
     )
     parser.add_argument(
+        "--frame-skip",
+        type=int,
+        default=30,
+        help="the number of frames skipped during preprocessing.",
+    )
+    parser.add_argument(
         "--epochs",
         type=int,
         default=10,
@@ -525,6 +541,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     run_training(
+        frame_skip=args.frame_skip,
         epochs=args.epochs,
         batch_size=args.batch_size,
         data_multiplier=args.data_multiplier,
