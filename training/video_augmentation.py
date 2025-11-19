@@ -37,8 +37,6 @@ class VideoAugmentation:
             saturation: How much to jitter saturation. saturation_factor \
                 is chosen uniformly from [max(0, 1 - saturation), 1 + saturation]
             hue: How much to jitter hue. hue_factor is chosen uniformly from [-hue, hue]
-            crop_size: Size of the random crop (height, width). If None, \
-                no cropping is applied
             scale_range: Range of scale factors for resizing before cropping
             probability: Probability of applying augmentations
         """
@@ -49,9 +47,7 @@ class VideoAugmentation:
         self.probability = probability
 
         # Color jitter transform (only for face images, not optical flow)
-        self.color_jitter = T.ColorJitter(
-            brightness=brightness, contrast=contrast, saturation=saturation, hue=hue
-        )
+        # is defined in __call__ to ensure same params are used across frames
 
     def __call__(
         self, faces: torch.Tensor, flows: torch.Tensor
@@ -76,12 +72,16 @@ class VideoAugmentation:
         augmented_faces = []
         augmented_flows = []
 
+        jitter_fn = T.ColorJitter(
+            self.brightness, self.contrast, self.saturation, self.hue
+        )
+
         for i in range(seq_len):
             face_frame = faces[i]  # Shape: (C, H, W)
             flow_frame = flows[i]  # Shape: (C, H, W)
 
             # Apply color jitter only to face images (not to optical flow)
-            face_frame = self.color_jitter(face_frame)
+            face_frame = jitter_fn(face_frame)
 
             augmented_faces.append(face_frame)
             augmented_flows.append(flow_frame)
