@@ -87,7 +87,7 @@ def build_resnet_cnn(input_channels: int) -> tuple[nn.Module, int]:
         )
 
     for name, param in model.named_parameters():
-        if not ((name.startswith("conv1") and input_channels == 2) or name.startswith("layer4")):
+        if not ((name.startswith("conv1") and input_channels == 2)): # or name.startswith("layer4")):
             param.requires_grad = False
 
     feature_size = model.fc.in_features
