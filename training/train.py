@@ -26,8 +26,10 @@ def _default_paths(frame_skip: int) -> tuple[Path, Path, Path, Path]:
     """Return default (img_dir, csv_file, weights_dir, logs_dir) paths."""
     script_dir = Path(__file__).resolve().parent
     project_root = script_dir.parent
-    data_dir = project_root / "data" / f"frame_skip_{frame_skip}"  # Main data folder
-    img_dir = data_dir / "faces"  # Directory containing image sequences
+    data_dir = project_root / "data"  # Main data folder
+    img_dir = (
+        data_dir / "faces" / f"frame_skip_{frame_skip}"
+    )  # Directory containing image sequences
     csv_file = data_dir / "labels.csv"  # CSV file with labels for each sequence
     weights_dir = data_dir / "weights"  # Directory to save model weights to
     logs_dir = project_root / "logs"  # Directory to save training logs to
