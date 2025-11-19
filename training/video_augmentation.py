@@ -10,7 +10,6 @@ from typing import Tuple
 
 import torch
 import torchvision.transforms as T
-import torchvision.transforms.functional as TF
 
 
 class VideoAugmentation:
@@ -23,7 +22,6 @@ class VideoAugmentation:
 
     def __init__(
         self,
-        rotation_degrees: float = 15.0,
         brightness: float = 0.2,
         contrast: float = 0.2,
         saturation: float = 0.2,
@@ -32,8 +30,6 @@ class VideoAugmentation:
     ) -> None:
         """
         Args:
-            rotation_degrees: Range of degrees for random rotation \
-                (-rotation_degrees, +rotation_degrees)
             brightness: How much to jitter brightness. brightness_factor \
                 is chosen uniformly from [max(0, 1 - brightness), 1 + brightness]
             contrast: How much to jitter contrast. contrast_factor \
@@ -41,12 +37,9 @@ class VideoAugmentation:
             saturation: How much to jitter saturation. saturation_factor \
                 is chosen uniformly from [max(0, 1 - saturation), 1 + saturation]
             hue: How much to jitter hue. hue_factor is chosen uniformly from [-hue, hue]
-            crop_size: Size of the random crop (height, width). If None, \
-                no cropping is applied
             scale_range: Range of scale factors for resizing before cropping
             probability: Probability of applying augmentations
         """
-        self.rotation_degrees = rotation_degrees
         self.brightness = brightness
         self.contrast = contrast
         self.saturation = saturation
@@ -54,9 +47,7 @@ class VideoAugmentation:
         self.probability = probability
 
         # Color jitter transform (only for face images, not optical flow)
-        self.color_jitter = T.ColorJitter(
-            brightness=brightness, contrast=contrast, saturation=saturation, hue=hue
-        )
+        # is defined in __call__ to ensure same params are used across frames
 
     def __call__(
         self, faces: torch.Tensor, flows: torch.Tensor
@@ -77,27 +68,20 @@ class VideoAugmentation:
 
         seq_len, _, h, w = faces.shape
 
-        # Generate random parameters for consistent application
-        angle = random.uniform(-self.rotation_degrees, self.rotation_degrees)
-
         # Apply transforms to each frame
         augmented_faces = []
         augmented_flows = []
+
+        jitter_fn = T.ColorJitter(
+            self.brightness, self.contrast, self.saturation, self.hue
+        )
 
         for i in range(seq_len):
             face_frame = faces[i]  # Shape: (C, H, W)
             flow_frame = flows[i]  # Shape: (C, H, W)
 
-            # Apply rotation to both faces and flows
-            face_frame = TF.rotate(
-                face_frame, angle, interpolation=TF.InterpolationMode.BILINEAR
-            )
-            flow_frame = TF.rotate(
-                flow_frame, angle, interpolation=TF.InterpolationMode.BILINEAR
-            )
-
             # Apply color jitter only to face images (not to optical flow)
-            face_frame = self.color_jitter(face_frame)
+            face_frame = jitter_fn(face_frame)
 
             augmented_faces.append(face_frame)
             augmented_flows.append(flow_frame)
