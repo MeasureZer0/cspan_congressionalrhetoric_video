@@ -3,6 +3,7 @@
 import argparse
 import concurrent.futures
 import os
+import random
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -11,6 +12,7 @@ import numpy as np  # NumPy for storing frames as arrays
 import pandas as pd  # Pandas for reading CSV labels
 import torch
 from extract_frames import extract_frames
+from frame_augmentation import FrameAugmentation
 from raft_optical_flow import get_optical_flow_between_frames
 from tqdm import tqdm
 
@@ -167,6 +169,7 @@ def frames_to_faces_and_optical_flows(
     size: tuple = (224, 224),
     margin: Optional[float] = 0.0,
     crop_width_ratio: float = 0.5,
+    augmenter: Optional[FrameAugmentation] = None,
 ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
     """
     Detect the face closest to horizontal center \
@@ -176,6 +179,8 @@ def frames_to_faces_and_optical_flows(
         frames (List[np.ndarray]): List of BGR frames (OpenCV).
         size (tuple): Target size (H, W) for resizing.
         margin (float or None): Margin to add around detected face box.
+        augmenter (Optional[FrameAugmentation]): Augmenter to apply to frames
+            before optical flow computation.
     Returns:
         List[torch.Tensor]: Tensor of shape (N, C, H, W) for N frames \
             with detected faces.
@@ -183,6 +188,10 @@ def frames_to_faces_and_optical_flows(
     """
     if not frames:
         return [torch.empty((0, 3, size[0], size[1]), dtype=torch.float32)], []
+
+    # Initialize augmentation parameters once for the entire sequence
+    if augmenter is not None:
+        augmenter.initialize_sequence_params()
 
     face_tensors = []
     optical_flows = []
@@ -201,11 +210,18 @@ def frames_to_faces_and_optical_flows(
             # skip frames without a detected face
             continue
 
-        # Resize the face and convert directly to tensor
+        # Resize the face
         face_resized = cv2.resize(face, size)
+
+        # Apply augmentation BEFORE converting to tensor and computing optical flow
+        if augmenter is not None:
+            face_resized = augmenter.augment_numpy_frame(face_resized)
+
+        # Convert to tensor
         face_chw = torch.from_numpy(face_resized.transpose(2, 0, 1)).float() / 255.0
         face_tensors.append(face_chw)
-        # Then calculate optical flow
+
+        # Calculate optical flow on augmented frames
         optical_flow = get_optical_flow_between_frames(
             prev_face if prev_face is not None else face_chw, face_chw
         )
@@ -250,6 +266,7 @@ def process_single_video(
     size: tuple,
     margin: float,
     purge: bool,
+    augmenter: Optional[FrameAugmentation] = None,
 ) -> Optional[str]:
     """
     Worker function: process one video, extract faces, save tensor.
@@ -263,7 +280,7 @@ def process_single_video(
 
     frames = extract_frames(path=video_path, frame_skip=frame_skip)
     tensors, optical_flows = frames_to_faces_and_optical_flows(
-        frames, size=size, margin=margin
+        frames, size=size, margin=margin, augmenter=augmenter
     )
     faces_tensor = stack_tensors(tensors, size=size)
     flows_tensor = stack_tensors(optical_flows, size=size)
@@ -289,20 +306,45 @@ def process_videos_in_parallel(
     size: tuple = (224, 224),
     margin: float = 0.0,
     purge: bool = False,
+    use_augmentation: bool = False,
+    rotation_degrees: float = 10.0,
+    brightness: float = 0.2,
+    contrast: float = 0.2,
+    saturation: float = 0.2,
+    hue: float = 0.1,
+    augmentation_probability: float = 0.5,
 ) -> list[str]:
     """
     Process all videos in parallel, each worker processes one video.
     Shows a progress bar that updates as each worker finishes.
     """
+    random.seed(2025)  # For reproducibility
+
     df = pd.read_csv(label_file)
     out_dir = out_dir / f"frame_skip_{frame_skip}"
+
+    # Create augmenter if augmentation is enabled
+    augmenter = None
+    if use_augmentation:
+        augmenter = FrameAugmentation(
+            rotation_degrees=rotation_degrees,
+            brightness=brightness,
+            contrast=contrast,
+            saturation=saturation,
+            hue=hue,
+            probability=augmentation_probability,
+        )
+        print(f"Augmentation enabled with probability={augmentation_probability}")
+
     jobs = []
     for _, row in df.iterrows():
         video_name = row.iloc[0]
         video_path = os.path.join(data_dir, video_name)
         stem = Path(video_name).stem
         out_path_base = Path(out_dir) / str(stem)
-        jobs.append((video_path, out_path_base, frame_skip, size, margin, purge))
+        jobs.append(
+            (video_path, out_path_base, frame_skip, size, margin, purge, augmenter)
+        )
 
     # Use as many workers as CPU cores if possible, but not more than jobs
     max_workers = min(os.cpu_count() or 4, len(jobs))
@@ -359,6 +401,44 @@ if __name__ == "__main__":
         action="store_true",
         help="Purge existing output files before processing.",
     )
+    parser.add_argument(
+        "--use_augmentation",
+        action="store_true",
+        help="Enable data augmentation.",
+    )
+    parser.add_argument(
+        "--rotation_degrees",
+        type=float,
+        default=10.0,
+        help="Maximum degrees for random rotation in augmentation.",
+    )
+    parser.add_argument(
+        "--brightness",
+        type=float,
+        default=0.2,
+        help="Brightness jitter factor for augmentation.",
+    )
+    parser.add_argument(
+        "--contrast",
+        type=float,
+        default=0.2,
+        help="Contrast jitter factor for augmentation.",
+    )
+    parser.add_argument(
+        "--saturation",
+        type=float,
+        default=0.2,
+        help="Saturation jitter factor for augmentation.",
+    )
+    parser.add_argument(
+        "--hue", type=float, default=0.1, help="Hue jitter factor for augmentation."
+    )
+    parser.add_argument(
+        "--augmentation_probability",
+        type=float,
+        default=0.5,
+        help="Probability of applying augmentation to each video.",
+    )
 
     args = parser.parse_args()
 
@@ -370,4 +450,11 @@ if __name__ == "__main__":
         size=args.size,
         margin=args.margin,
         purge=args.purge,
+        use_augmentation=args.use_augmentation,
+        rotation_degrees=args.rotation_degrees,
+        brightness=args.brightness,
+        contrast=args.contrast,
+        saturation=args.saturation,
+        hue=args.hue,
+        augmentation_probability=args.augmentation_probability,
     )
