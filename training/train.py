@@ -104,7 +104,8 @@ def build_resnet_cnn(input_channels: int) -> tuple[nn.Module, int]:
 
 def build_small_cnn(input_channels: int) -> tuple[nn.Module, int]:
     """
-    Builds a small CNN model that can process images with an arbitrary number of channels.
+    Builds a small CNN model that can process images with an \
+        arbitrary number of channels.
 
     Args:
         input_channels: number of input channels (e.g., 3 for RGB, 2 for optical flow)
@@ -436,7 +437,7 @@ def sequence_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
     return F.cross_entropy(logits, targets)
 
 
-def sequence_accuracy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+def sequence_accuracy(logits: torch.Tensor, targets: torch.Tensor) -> tuple[int, int]:
     """
     Computes accuracy only for non-padded elements.
 
@@ -444,12 +445,12 @@ def sequence_accuracy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tens
         logits: tensor [B, num_classes]
         targets: tensor [B]
     Returns:
-        scalar accuracy value over valid positions
+        tuple with (correct_count, total_count)
     """
     with torch.no_grad():
         preds = torch.argmax(logits, dim=1)
-        correct = (preds == targets).sum().item()
-        total = targets.shape[0]
+        correct = int((preds == targets).sum().item())
+        total = int(targets.shape[0])
         return correct, total
 
 
