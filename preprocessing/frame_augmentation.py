@@ -37,10 +37,8 @@ class FrameAugmentation:
         self.contrast = config.contrast
         self.saturation = config.saturation
         self.hue = config.hue
-        self.probability = config.probability
 
         # These will be set once per sequence
-        self.apply_augmentation: bool = False
         self.current_angle: Optional[float] = None
         self.brightness_factor: Optional[float] = None
         self.contrast_factor: Optional[float] = None
@@ -51,41 +49,32 @@ class FrameAugmentation:
         """
         Initialize augmentation parameters for a new sequence.
         Should be called once per video sequence before processing frames.
+
+        Always applies augmentation - samples random parameters once for the
+        entire sequence.
         """
-        # Decide whether to augment this sequence
-        self.apply_augmentation = random.random() < self.probability
+        # Sample random parameters once for the entire sequence
+        self.current_angle = random.uniform(
+            -self.rotation_degrees, self.rotation_degrees
+        )
 
-        if self.apply_augmentation:
-            # Sample random parameters once for the entire sequence
-            self.current_angle = random.uniform(
-                -self.rotation_degrees, self.rotation_degrees
-            )
-
-            # Sample color jitter parameters that will be applied to all frames
-            self.brightness_factor = (
-                random.uniform(max(0, 1 - self.brightness), 1 + self.brightness)
-                if self.brightness > 0
-                else 1.0
-            )
-            self.contrast_factor = (
-                random.uniform(max(0, 1 - self.contrast), 1 + self.contrast)
-                if self.contrast > 0
-                else 1.0
-            )
-            self.saturation_factor = (
-                random.uniform(max(0, 1 - self.saturation), 1 + self.saturation)
-                if self.saturation > 0
-                else 1.0
-            )
-            self.hue_factor = (
-                random.uniform(-self.hue, self.hue) if self.hue > 0 else 0.0
-            )
-        else:
-            self.current_angle = None
-            self.brightness_factor = None
-            self.contrast_factor = None
-            self.saturation_factor = None
-            self.hue_factor = None
+        # Sample color jitter parameters that will be applied to all frames
+        self.brightness_factor = (
+            random.uniform(max(0, 1 - self.brightness), 1 + self.brightness)
+            if self.brightness > 0
+            else 1.0
+        )
+        self.contrast_factor = (
+            random.uniform(max(0, 1 - self.contrast), 1 + self.contrast)
+            if self.contrast > 0
+            else 1.0
+        )
+        self.saturation_factor = (
+            random.uniform(max(0, 1 - self.saturation), 1 + self.saturation)
+            if self.saturation > 0
+            else 1.0
+        )
+        self.hue_factor = random.uniform(-self.hue, self.hue) if self.hue > 0 else 0.0
 
     def augment_frame(self, frame: torch.Tensor) -> torch.Tensor:
         """
@@ -97,7 +86,7 @@ class FrameAugmentation:
         Returns:
             Augmented frame tensor of shape (C, H, W)
         """
-        if not self.apply_augmentation or self.current_angle is None:
+        if self.current_angle is None:
             return frame
 
         # Apply rotation
@@ -127,7 +116,7 @@ class FrameAugmentation:
         Returns:
             Augmented numpy array of shape (H, W, C) with values in [0, 255]
         """
-        if not self.apply_augmentation or self.current_angle is None:
+        if self.current_angle is None:
             return frame
 
         # Convert to tensor

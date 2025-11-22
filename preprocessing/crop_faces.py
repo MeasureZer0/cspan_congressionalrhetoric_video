@@ -277,27 +277,37 @@ def process_single_video(
     crop_width_ratio: float,
     purge: bool,
     augmenter: Optional[FrameAugmentation] = None,
+    apply_augmentation: bool = False,
 ) -> Optional[str]:
     """
     Worker function: process one video, extract faces, save tensor.
     Returns output path if successful, None otherwise.
+
+    Args:
+        apply_augmentation: If True and augmenter is provided, apply augmentation
+            and save with '_aug' suffix.
     """
-    out_path_faces = Path(f"{out_path_base}_faces.pt")
-    out_path_flows = Path(f"{out_path_base}_flows.pt")
+    suffix = "_aug" if apply_augmentation else ""
+    out_path_faces = Path(f"{out_path_base}{suffix}_faces.pt")
+    out_path_flows = Path(f"{out_path_base}{suffix}_flows.pt")
     if not purge and (out_path_faces.exists() and out_path_flows.exists()):
-        print(f"Skipping {video_path}: output already exists -> {out_path_base}")
-        return str(out_path_base)
+        print(
+            f"Skipping {video_path}: output already exists -> {out_path_base}{suffix}"
+        )
+        return str(out_path_base) + suffix
 
     frames = extract_frames(path=video_path, frame_skip=frame_skip)
 
     detector = _get_face_detector()
+    # Only pass augmenter if we want to apply augmentation for this run
+    active_augmenter = augmenter if apply_augmentation else None
     tensors, optical_flows = frames_to_faces_and_optical_flows(
         frames,
         detector=detector,
         size=size,
         margin=margin,
         crop_width_ratio=crop_width_ratio,
-        augmenter=augmenter,
+        augmenter=active_augmenter,
     )
     faces_tensor = stack_tensors(tensors, size=size)
     flows_tensor = stack_tensors(optical_flows, size=size)
@@ -312,7 +322,7 @@ def process_single_video(
         return None
     save_tensor(flows_tensor, str(out_path_flows))
     print(f"Saved {flows_tensor.shape} for {video_path} -> {out_path_flows}")
-    return str(out_path_base)
+    return str(out_path_base) + suffix
 
 
 def process_videos_in_parallel(
@@ -321,6 +331,10 @@ def process_videos_in_parallel(
     """
     Process all videos in parallel, each worker processes one video.
     Shows a progress bar that updates as each worker finishes.
+
+    When augmentation is enabled, processes each video twice:
+    - Once without augmentation (original)
+    - Once with augmentation (saved with '_aug' suffix)
     """
     random.seed(2025)  # For reproducibility
 
@@ -330,9 +344,7 @@ def process_videos_in_parallel(
     augmenter = None
     if config.augmentation.enabled:
         augmenter = FrameAugmentation(config=config.augmentation)
-        print(
-            f"Augmentation enabled with probability={config.augmentation.probability}"
-        )
+        print("Augmentation enabled - will create both original and augmented versions")
 
     jobs = []
     for _, row in df.iterrows():
@@ -340,6 +352,8 @@ def process_videos_in_parallel(
         video_path = os.path.join(config.data_dir, video_name)
         stem = Path(video_name).stem
         out_path_base = Path(config.out_dir) / str(stem)
+
+        # Always process original version
         jobs.append(
             (
                 video_path,
@@ -350,8 +364,25 @@ def process_videos_in_parallel(
                 config.crop_width_ratio,
                 config.purge,
                 augmenter,
+                False,  # apply_augmentation=False for original
             )
         )
+
+        # If augmentation is enabled, also process augmented version
+        if config.augmentation.enabled:
+            jobs.append(
+                (
+                    video_path,
+                    out_path_base,
+                    config.frame_skip,
+                    config.size,
+                    config.margin,
+                    config.crop_width_ratio,
+                    config.purge,
+                    augmenter,
+                    True,  # apply_augmentation=True for augmented
+                )
+            )
 
     # Use as many workers as CPU cores if possible, but not more than jobs
     if config.max_workers is None:

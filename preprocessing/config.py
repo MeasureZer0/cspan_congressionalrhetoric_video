@@ -15,7 +15,11 @@ models_dir = data_dir / "weights"
 
 @dataclass
 class AugmentationConfig:
-    """Configuration for data augmentation during preprocessing."""
+    """Configuration for data augmentation during preprocessing.
+
+    When enabled, creates augmented versions of videos as additional training samples.
+    Original videos are always kept - augmented versions are saved with '_aug' suffix.
+    """
 
     enabled: bool = False
     rotation_degrees: float = 10.0
@@ -23,7 +27,6 @@ class AugmentationConfig:
     contrast: float = 0.2
     saturation: float = 0.2
     hue: float = 0.1
-    probability: float = 0.5
 
 
 @dataclass

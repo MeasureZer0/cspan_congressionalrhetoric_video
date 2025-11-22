@@ -80,7 +80,11 @@ def parse_args() -> PreprocessingConfig:
     parser.add_argument(
         "--use-augmentation",
         action="store_true",
-        help="Enable data augmentation during preprocessing.",
+        help=(
+            "Enable data augmentation during preprocessing. "
+            "Creates augmented versions as additional training samples "
+            "(with '_aug' suffix)."
+        ),
     )
     parser.add_argument(
         "--rotation-degrees",
@@ -112,12 +116,6 @@ def parse_args() -> PreprocessingConfig:
         default=default_config.augmentation.hue,
         help="Hue jitter factor for augmentation.",
     )
-    parser.add_argument(
-        "--augmentation-probability",
-        type=float,
-        default=default_config.augmentation.probability,
-        help="Probability of applying augmentation to each video.",
-    )
 
     args = parser.parse_args()
 
@@ -143,7 +141,6 @@ def parse_args() -> PreprocessingConfig:
             contrast=args.contrast,
             saturation=args.saturation,
             hue=args.hue,
-            probability=args.augmentation_probability,
         ),
     )
 
@@ -167,7 +164,7 @@ if __name__ == "__main__":
     print(f"  Crop width ratio: {config.crop_width_ratio}")
     print(f"  Augmentation: {config.augmentation.enabled}")
     if config.augmentation.enabled:
-        print(f"    Probability: {config.augmentation.probability}")
+        print("    Will create both original and augmented versions")
         print(f"    Rotation: ±{config.augmentation.rotation_degrees}°")
         print(f"    Brightness: ±{config.augmentation.brightness}")
         print(f"    Contrast: ±{config.augmentation.contrast}")
