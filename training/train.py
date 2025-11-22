@@ -7,7 +7,6 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 from faces_frames_dataset import FacesFramesDataset
-from subset_data_multiplier import SubsetDataMultiplier
 from torch import nn
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence, pad_sequence
 from torch.utils.data import DataLoader, Subset
@@ -276,8 +275,7 @@ def run_training(
     frame_skip: int = 30,
     epochs: int = 10,
     batch_size: int = 2,
-    data_multiplier: int = 1,
-    augmentation_strength: str = "standard",
+    include_augmented: bool = False,
     output_csv: Path | str | None = None,
     cnn_type: str = "resnet",
 ) -> None:
@@ -291,8 +289,6 @@ def run_training(
         augmentation_strength: "light", "standard", or "heavy"
         output_csv: path to output CSV file to append training results
     """
-
-    assert 1 <= data_multiplier <= 2, "data_multiplier must be 1 or and 2"
 
     device = _get_device()
     torch.manual_seed(2)
@@ -308,7 +304,9 @@ def run_training(
         "collate_fn": collate_fn,
     }
 
-    original_dataset = FacesFramesDataset(csv_file, img_dir)
+    original_dataset = FacesFramesDataset(
+        csv_file, img_dir, include_augmented=include_augmented
+    )
 
     # Use stratified split: put around 60% train, 20% val, 20% test
     train_indices, val_indices, _ = stratified_split(original_dataset, (0.8, 0.2, 0.0))
@@ -316,16 +314,7 @@ def run_training(
     print(f"Original dataset: {len(original_dataset)} samples")
     print(f"Train split: {len(train_indices)} samples")
 
-    if data_multiplier > 1:
-        train_dataset = SubsetDataMultiplier(
-            csv_file=csv_file,
-            img_dir=img_dir,
-            train_indices=train_indices,
-            multiplier=data_multiplier,
-            augmentation_strength=augmentation_strength,
-        )
-    else:
-        train_dataset = Subset(original_dataset, train_indices)
+    train_dataset = Subset(original_dataset, train_indices)
 
     print(f"Training samples (after augmentation): {len(train_dataset)}")
     print(f"Validation samples: {len(val_indices)}")
@@ -512,18 +501,10 @@ if __name__ == "__main__":
         help="Batch size for training.",
     )
     parser.add_argument(
-        "--data-multiplier",
-        type=int,
-        default=1,
-        help="How many versions of each video used for training (default: 1 = \
-              no extra data).",
-    )
-    parser.add_argument(
-        "--augmentation",
-        type=str,
-        default="standard",
-        choices=["light", "standard", "heavy"],
-        help="Augmentation strength (default: standard).",
+        "--include-augmented",
+        type=bool,
+        default=False,
+        help="Whether to include augmented data in training (default: False).",
     )
     parser.add_argument(
         "--output-csv",
@@ -547,8 +528,7 @@ if __name__ == "__main__":
         frame_skip=args.frame_skip,
         epochs=args.epochs,
         batch_size=args.batch_size,
-        data_multiplier=args.data_multiplier,
-        augmentation_strength=args.augmentation,
         output_csv=args.output_csv,
         cnn_type=args.cnn_type,
+        include_augmented=args.include_augmented,
     )
