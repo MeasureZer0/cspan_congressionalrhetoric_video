@@ -13,6 +13,7 @@ import numpy as np
 import torch
 import torchvision.transforms as T
 import torchvision.transforms.functional as TF
+from config import AugmentationConfig
 
 
 class FrameAugmentation:
@@ -25,31 +26,18 @@ class FrameAugmentation:
 
     def __init__(
         self,
-        rotation_degrees: float = 10.0,
-        brightness: float = 0.2,
-        contrast: float = 0.2,
-        saturation: float = 0.2,
-        hue: float = 0.1,
-        probability: float = 0.5,
+        config: AugmentationConfig,
     ) -> None:
         """
         Args:
-            rotation_degrees: Maximum degrees for random rotation
-            brightness: How much to jitter brightness. brightness_factor \
-                is chosen uniformly from [max(0, 1 - brightness), 1 + brightness]
-            contrast: How much to jitter contrast. contrast_factor \
-                is chosen uniformly from [max(0, 1 - contrast), 1 + contrast]
-            saturation: How much to jitter saturation. saturation_factor \
-                is chosen uniformly from [max(0, 1 - saturation), 1 + saturation]
-            hue: How much to jitter hue. hue_factor is chosen uniformly from [-hue, hue]
-            probability: Probability of applying augmentations
+            config: AugmentationConfig object with augmentation parameters
         """
-        self.rotation_degrees = rotation_degrees
-        self.brightness = brightness
-        self.contrast = contrast
-        self.saturation = saturation
-        self.hue = hue
-        self.probability = probability
+        self.rotation_degrees = config.rotation_degrees
+        self.brightness = config.brightness
+        self.contrast = config.contrast
+        self.saturation = config.saturation
+        self.hue = config.hue
+        self.probability = config.probability
 
         # These will be set once per sequence
         self.apply_augmentation: bool = False

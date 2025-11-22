@@ -1,6 +1,5 @@
 """Video Preprocessing Module"""
 
-import argparse
 import concurrent.futures
 import os
 import random
@@ -11,37 +10,41 @@ import cv2  # OpenCV for video processing
 import numpy as np  # NumPy for storing frames as arrays
 import pandas as pd  # Pandas for reading CSV labels
 import torch
+from config import FaceDetectionConfig, PreprocessingConfig
 from extract_frames import extract_frames
 from frame_augmentation import FrameAugmentation
 from raft_optical_flow import get_optical_flow_between_frames
 from tqdm import tqdm
 
-# Define paths to input data relative to this file
-script_dir = Path(__file__).resolve().parent
-project_root = script_dir.parent
-data_dir = project_root / "data"
-raw_videos_dir = data_dir / "raw_videos"
-label_file = data_dir / "labels.csv"
-models_dir = data_dir / "weights"
+# Load face detection config
+face_config = None
 
-# Assert all required files exist
-assert (label_file).exists(), f"Label file not found: {label_file}"
-assert raw_videos_dir.exists(), f"Raw videos directory not found: {raw_videos_dir}"
+# Process-local face detector (initialized lazily in each worker)
+_face_detector = None
 
-assert (models_dir / "face_detection_yunet_2023mar.onnx").exists(), (
-    f"Model file not found: {models_dir / 'face_detection_yunet_2023mar.onnx'}. "
-    "Please run scripts/download-weights.py to download the model weights."
-)
 
-# Initialise YuNet face detector
-face_detector = cv2.FaceDetectorYN.create(
-    model=str(models_dir / "face_detection_yunet_2023mar.onnx"),
-    config="",
-    input_size=(768, 576),
-    score_threshold=0.9,
-    nms_threshold=0.3,
-    top_k=5000,
-)
+def _get_face_detector() -> cv2.FaceDetectorYN:
+    """Get or create face detector for current process.
+
+    This lazy initialization ensures each worker process gets its own
+    detector instance, avoiding pickling issues with ProcessPoolExecutor.
+    """
+
+    global _face_detector
+    if _face_detector is None:
+        global face_config
+        if face_config is None:
+            face_config = FaceDetectionConfig()
+
+        _face_detector = cv2.FaceDetectorYN.create(
+            model=str(face_config.model_path),
+            config="",
+            input_size=face_config.input_size,
+            score_threshold=face_config.score_threshold,
+            nms_threshold=face_config.nms_threshold,
+            top_k=face_config.top_k,
+        )
+    return _face_detector
 
 
 def _rgb(frame: np.ndarray) -> np.ndarray:
@@ -55,7 +58,9 @@ def _rgb(frame: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
 
-def detect_speakers_face(frame: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+def detect_speakers_face(
+    frame: np.ndarray, detector: cv2.FaceDetectorYN
+) -> Optional[Tuple[int, int, int, int]]:
     """
     Detect the most central face in the given video frame using YuNet.
 
@@ -69,11 +74,13 @@ def detect_speakers_face(frame: np.ndarray) -> Optional[Tuple[int, int, int, int
             (top, right, bottom, left) format.
             Returns None if no face is found.
     """
+    # Get detector for current process
+
     # Convert from BGR to RGB
     rgb = _rgb(frame)
     h, w = rgb.shape[:2]
-    face_detector.setInputSize((w, h))
-    _, faces = face_detector.detect(rgb)
+    detector.setInputSize((w, h))
+    _, faces = detector.detect(rgb)
     if faces is None or len(faces) == 0:
         return None
 
@@ -161,11 +168,13 @@ def crop_face(
     right = min(w, right)
     if bottom <= top or right <= left:
         return None
+
     return rgb[top:bottom, left:right]
 
 
 def frames_to_faces_and_optical_flows(
     frames: List[np.ndarray],
+    detector: cv2.FaceDetectorYN,
     size: tuple = (224, 224),
     margin: Optional[float] = 0.0,
     crop_width_ratio: float = 0.5,
@@ -204,7 +213,7 @@ def frames_to_faces_and_optical_flows(
         start = (w - new_w) // 2
         f_cropped = f[:, start : start + new_w, :]
 
-        loc = detect_speakers_face(f_cropped)
+        loc = detect_speakers_face(f_cropped, detector=detector)
         face = crop_face(f_cropped, loc, margin=margin)
         if face is None:
             # skip frames without a detected face
@@ -265,6 +274,7 @@ def process_single_video(
     frame_skip: int,
     size: tuple,
     margin: float,
+    crop_width_ratio: float,
     purge: bool,
     augmenter: Optional[FrameAugmentation] = None,
 ) -> Optional[str]:
@@ -279,8 +289,15 @@ def process_single_video(
         return str(out_path_base)
 
     frames = extract_frames(path=video_path, frame_skip=frame_skip)
+
+    detector = _get_face_detector()
     tensors, optical_flows = frames_to_faces_and_optical_flows(
-        frames, size=size, margin=margin, augmenter=augmenter
+        frames,
+        detector=detector,
+        size=size,
+        margin=margin,
+        crop_width_ratio=crop_width_ratio,
+        augmenter=augmenter,
     )
     faces_tensor = stack_tensors(tensors, size=size)
     flows_tensor = stack_tensors(optical_flows, size=size)
@@ -299,20 +316,7 @@ def process_single_video(
 
 
 def process_videos_in_parallel(
-    data_dir: Path,
-    label_file: Path,
-    out_dir: Path,
-    frame_skip: int = 30,
-    size: tuple = (224, 224),
-    margin: float = 0.0,
-    purge: bool = False,
-    use_augmentation: bool = False,
-    rotation_degrees: float = 10.0,
-    brightness: float = 0.2,
-    contrast: float = 0.2,
-    saturation: float = 0.2,
-    hue: float = 0.1,
-    augmentation_probability: float = 0.5,
+    config: PreprocessingConfig,
 ) -> list[str]:
     """
     Process all videos in parallel, each worker processes one video.
@@ -320,34 +324,41 @@ def process_videos_in_parallel(
     """
     random.seed(2025)  # For reproducibility
 
-    df = pd.read_csv(label_file)
-    out_dir = out_dir / f"frame_skip_{frame_skip}"
+    df = pd.read_csv(config.label_file)
 
     # Create augmenter if augmentation is enabled
     augmenter = None
-    if use_augmentation:
-        augmenter = FrameAugmentation(
-            rotation_degrees=rotation_degrees,
-            brightness=brightness,
-            contrast=contrast,
-            saturation=saturation,
-            hue=hue,
-            probability=augmentation_probability,
+    if config.augmentation.enabled:
+        augmenter = FrameAugmentation(config=config.augmentation)
+        print(
+            f"Augmentation enabled with probability={config.augmentation.probability}"
         )
-        print(f"Augmentation enabled with probability={augmentation_probability}")
 
     jobs = []
     for _, row in df.iterrows():
         video_name = row.iloc[0]
-        video_path = os.path.join(data_dir, video_name)
+        video_path = os.path.join(config.data_dir, video_name)
         stem = Path(video_name).stem
-        out_path_base = Path(out_dir) / str(stem)
+        out_path_base = Path(config.out_dir) / str(stem)
         jobs.append(
-            (video_path, out_path_base, frame_skip, size, margin, purge, augmenter)
+            (
+                video_path,
+                out_path_base,
+                config.frame_skip,
+                config.size,
+                config.margin,
+                config.crop_width_ratio,
+                config.purge,
+                augmenter,
+            )
         )
 
     # Use as many workers as CPU cores if possible, but not more than jobs
-    max_workers = min(os.cpu_count() or 4, len(jobs))
+    if config.max_workers is None:
+        max_workers = min(os.cpu_count() or 4, len(jobs))
+    else:
+        max_workers = min(config.max_workers, len(jobs))
+
     print(f"Processing {len(jobs)} videos with {max_workers} workers...")
     outputs: List[str] = []
     # Use ProcessPoolExecutor to distribute the jobs to all workers
@@ -363,98 +374,3 @@ def process_videos_in_parallel(
                 # Update the progress bar upon each completion
                 pbar.update(1)
     return outputs
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Process videos to extract face tensors."
-    )
-    parser.add_argument(
-        "--data_dir",
-        type=Path,
-        default=raw_videos_dir,
-        help="Path to the directory containing video files.",
-    )
-    parser.add_argument(
-        "--label_file",
-        type=Path,
-        default=label_file,
-        help="Path to the CSV file containing video labels.",
-    )
-    parser.add_argument(
-        "--out_dir",
-        type=Path,
-        default=data_dir / "faces",
-        help="Path to the directory where output tensors will be saved.",
-    )
-    parser.add_argument(
-        "--frame_skip", type=int, default=30, help="Save only every N-th frame."
-    )
-    parser.add_argument(
-        "--size", type=tuple, default=(224, 224), help="Target size for face tensors."
-    )
-    parser.add_argument(
-        "--margin", type=float, default=0.1, help="Margin to add around detected faces."
-    )
-    parser.add_argument(
-        "--purge",
-        action="store_true",
-        help="Purge existing output files before processing.",
-    )
-    parser.add_argument(
-        "--use_augmentation",
-        action="store_true",
-        help="Enable data augmentation.",
-    )
-    parser.add_argument(
-        "--rotation_degrees",
-        type=float,
-        default=10.0,
-        help="Maximum degrees for random rotation in augmentation.",
-    )
-    parser.add_argument(
-        "--brightness",
-        type=float,
-        default=0.2,
-        help="Brightness jitter factor for augmentation.",
-    )
-    parser.add_argument(
-        "--contrast",
-        type=float,
-        default=0.2,
-        help="Contrast jitter factor for augmentation.",
-    )
-    parser.add_argument(
-        "--saturation",
-        type=float,
-        default=0.2,
-        help="Saturation jitter factor for augmentation.",
-    )
-    parser.add_argument(
-        "--hue", type=float, default=0.1, help="Hue jitter factor for augmentation."
-    )
-    parser.add_argument(
-        "--augmentation_probability",
-        type=float,
-        default=0.5,
-        help="Probability of applying augmentation to each video.",
-    )
-
-    args = parser.parse_args()
-
-    process_videos_in_parallel(
-        data_dir=args.data_dir,
-        label_file=args.label_file,
-        out_dir=args.out_dir,
-        frame_skip=args.frame_skip,
-        size=args.size,
-        margin=args.margin,
-        purge=args.purge,
-        use_augmentation=args.use_augmentation,
-        rotation_degrees=args.rotation_degrees,
-        brightness=args.brightness,
-        contrast=args.contrast,
-        saturation=args.saturation,
-        hue=args.hue,
-        augmentation_probability=args.augmentation_probability,
-    )
