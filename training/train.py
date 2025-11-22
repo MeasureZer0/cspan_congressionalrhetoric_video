@@ -502,8 +502,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--include-augmented",
-        type=bool,
-        default=False,
+        action="store_true",
         help="Whether to include augmented data in training (default: False).",
     )
     parser.add_argument(
