@@ -295,6 +295,7 @@ def process_videos_in_parallel(
     Shows a progress bar that updates as each worker finishes.
     """
     df = pd.read_csv(label_file)
+    out_dir = out_dir / f"frame_skip_{frame_skip}"
     jobs = []
     for _, row in df.iterrows():
         video_name = row.iloc[0]

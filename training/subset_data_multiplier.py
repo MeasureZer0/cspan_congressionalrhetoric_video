@@ -52,7 +52,6 @@ class SubsetDataMultiplier(Dataset):
         # Create augmentation
         if augmentation_strength == "light":
             self.augmentation = VideoAugmentation(
-                rotation_degrees=5.0,
                 brightness=0.05,
                 contrast=0.05,
                 saturation=0.05,
@@ -61,7 +60,6 @@ class SubsetDataMultiplier(Dataset):
             )
         elif augmentation_strength == "standard":
             self.augmentation = VideoAugmentation(
-                rotation_degrees=10.0,
                 brightness=0.1,
                 contrast=0.1,
                 saturation=0.1,
@@ -70,7 +68,6 @@ class SubsetDataMultiplier(Dataset):
             )
         else:  # heavy
             self.augmentation = VideoAugmentation(
-                rotation_degrees=15.0,
                 brightness=0.2,
                 contrast=0.2,
                 saturation=0.2,
