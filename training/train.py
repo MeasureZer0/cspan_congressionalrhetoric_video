@@ -157,15 +157,9 @@ class FeatureAggregatingLSTM(nn.Module):
             self.flow_extractor, _ = build_small_cnn(2)
         else:
             raise ValueError(f"Unknown cnn_type: {cnn_type}")
-        self.projection = nn.Sequential(
-            nn.Linear(2 * feature_size, projection_dim),
-            nn.LayerNorm(projection_dim), 
-            nn.ReLU(),
-            nn.Dropout(0.5) 
-        )
         # LSTM processes the concatenated feature vectors over time
         self.lstm = nn.LSTM(
-            projection_dim, # 2 * feature_size,
+            2 * feature_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
@@ -200,13 +194,10 @@ class FeatureAggregatingLSTM(nn.Module):
         device = next(self.parameters()).device
         for seq_image, seq_flow in zip(batch_image, batch_flow, strict=False):
             # move inputs to the same device as the model parameters
-            seq_image = seq_image.to(device)
-            seq_flow = seq_flow.to(device)
             image_features = self.image_extractor(seq_image)  # [T, feat_dim]
             flow_features = self.flow_extractor(seq_flow)  # [T, feat_dim]
             seq_features = torch.cat([image_features, flow_features], dim=1)
-            projected = self.projection(seq_features)
-            features.append(projected) # seq_features
+            features.append(seq_features) # seq_features
 
         # Pad sequences to the same length
         padded = pad_sequence(features, batch_first=True)
@@ -279,7 +270,7 @@ def run_training(
     frame_skip: int = 30,
     epochs: int = 10,
     batch_size: int = 2,
-    data_multiplier: int = 1,
+    data_multiplier: int = 2,
     augmentation_strength: str = "standard",
     output_csv: Path | str | None = None,
     cnn_type: str = "resnet",
@@ -372,6 +363,8 @@ def run_training(
         ):
             optimizer.zero_grad()
             labels = labels.to(device)
+            batch_image = [seq.to(device) for seq in batch_image]
+            batch_flow = [seq.to(device) for seq in batch_flow]
             logits = model(batch_image, batch_flow, lengths)
 
             loss = sequence_loss(logits, labels)
@@ -480,6 +473,8 @@ def evaluate(
     with torch.no_grad():
         for batch_image, batch_flow, labels, lengths in tqdm(dataloader, desc=desc):
             labels = labels.to(device)
+            batch_image = [seq.to(device) for seq in batch_image]
+            batch_flow = [seq.to(device) for seq in batch_flow]
             logits = model(batch_image, batch_flow, lengths)
             loss = sequence_loss(logits, labels)
             batch_correct, batch_total = sequence_accuracy(logits, labels)

@@ -10,6 +10,7 @@ from typing import Tuple
 
 import torch
 import torchvision.transforms as T
+import torchvision.transforms.functional as TF
 
 
 class VideoAugmentation:
@@ -22,6 +23,7 @@ class VideoAugmentation:
 
     def __init__(
         self,
+        size: Tuple[int, int] = (224, 224),
         brightness: float = 0.2,
         contrast: float = 0.2,
         saturation: float = 0.2,
@@ -40,6 +42,7 @@ class VideoAugmentation:
             scale_range: Range of scale factors for resizing before cropping
             probability: Probability of applying augmentations
         """
+        self.size = size
         self.brightness = brightness
         self.contrast = contrast
         self.saturation = saturation
@@ -66,28 +69,56 @@ class VideoAugmentation:
         if random.random() > self.probability:
             return faces, flows
 
-        seq_len, _, h, w = faces.shape
+        seq_len, _, _, _ = faces.shape
 
         # Apply transforms to each frame
         augmented_faces = []
         augmented_flows = []
 
+        # Draw jittering for whole video
         jitter_fn = T.ColorJitter(
             self.brightness, self.contrast, self.saturation, self.hue
         )
 
-        for i in range(seq_len):
-            face_frame = faces[i]  # Shape: (C, H, W)
-            flow_frame = flows[i]  # Shape: (C, H, W)
 
-            # Apply color jitter only to face images (not to optical flow)
-            face_frame = jitter_fn(face_frame)
+        # Get jittering params
+        fn_idx, brightness_factor, contrast_factor, saturation_factor, hue_factor = \
+        T.ColorJitter.get_params(jitter_fn.brightness, jitter_fn.contrast, jitter_fn.saturation, jitter_fn.hue)
+
+        do_flip = random.random() < 0.5
+
+        # Draw RandomResizedCrop params
+        i, j, h, w = T.RandomResizedCrop.get_params(
+            img=faces[0], scale=(0.8, 1.0), ratio=(0.9, 1.1)
+        )
+
+        for k in range(seq_len):
+            face_frame = faces[k]  # Shape: (C, H, W)
+            flow_frame = flows[k]  # Shape: (C, H, W)
+
+            # Crop & Resize
+            face_frame = TF.resized_crop(face_frame, i, j, h, w, self.size, antialias=True)
+            flow_frame = TF.resized_crop(flow_frame, i, j, h, w, self.size, antialias=True)
+
+            # Horizontal Flip
+            if do_flip:
+                face_frame = TF.hflip(face_frame)
+                flow_frame = TF.hflip(flow_frame)
+                
+                flow_frame[0, :, :] *= -1
+
+            # Apply color jitter to face images
+            for fn_id in fn_idx:
+                if fn_id == 0:
+                    face_frame = TF.adjust_brightness(face_frame, brightness_factor)
+                elif fn_id == 1:
+                    face_frame = TF.adjust_contrast(face_frame, contrast_factor)
+                elif fn_id == 2:
+                    face_frame = TF.adjust_saturation(face_frame, saturation_factor)
+                elif fn_id == 3:
+                    face_frame = TF.adjust_hue(face_frame, hue_factor)
 
             augmented_faces.append(face_frame)
             augmented_flows.append(flow_frame)
 
-        # Stack back into tensors
-        augmented_faces = torch.stack(augmented_faces)
-        augmented_flows = torch.stack(augmented_flows)
-
-        return augmented_faces, augmented_flows
+        return torch.stack(augmented_faces), torch.stack(augmented_flows)
