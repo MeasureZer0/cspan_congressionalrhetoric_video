@@ -13,7 +13,6 @@ import torch
 from config import FaceDetectionConfig, PreprocessingConfig
 from extract_frames import extract_frames
 from frame_augmentation import FrameAugmentation
-from raft_optical_flow import get_optical_flow_between_frames
 from tqdm import tqdm
 
 # Load face detection config
@@ -172,40 +171,35 @@ def crop_face(
     return rgb[top:bottom, left:right]
 
 
-def frames_to_faces_and_optical_flows(
+def frames_to_faces(
     frames: List[np.ndarray],
     detector: cv2.FaceDetectorYN,
     size: tuple = (224, 224),
     margin: Optional[float] = 0.0,
     crop_width_ratio: float = 0.5,
     augmenter: Optional[FrameAugmentation] = None,
-) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+) -> List[torch.Tensor]:
     """
     Detect the face closest to horizontal center \
     in each frame, crop, resize, and convert to a tensor.
-    We also compute optical flow between frames.
     Args:
         frames (List[np.ndarray]): List of BGR frames (OpenCV).
         size (tuple): Target size (H, W) for resizing.
         margin (float or None): Margin to add around detected face box.
         augmenter (Optional[FrameAugmentation]): Augmenter to apply to frames
-            before optical flow computation.
+            before converting to tensor.
     Returns:
         List[torch.Tensor]: Tensor of shape (N, C, H, W) for N frames \
             with detected faces.
-        List[torch.Tensor]: List of optical flow tensors between consecutive frames.
     """
     if not frames:
-        return [torch.empty((0, 3, size[0], size[1]), dtype=torch.float32)], []
+        return [torch.empty((0, 3, size[0], size[1]), dtype=torch.float32)]
 
     # Initialize augmentation parameters once for the entire sequence
     if augmenter is not None:
         augmenter.initialize_sequence_params()
 
     face_tensors = []
-    optical_flows = []
-
-    prev_face = None
 
     for f in frames:
         _, w = f.shape[:2]
@@ -222,7 +216,7 @@ def frames_to_faces_and_optical_flows(
         # Resize the face
         face_resized = cv2.resize(face, size)
 
-        # Apply augmentation BEFORE converting to tensor and computing optical flow
+        # Apply augmentation BEFORE converting to tensor
         if augmenter is not None:
             face_resized = augmenter.augment_numpy_frame(face_resized)
 
@@ -230,15 +224,7 @@ def frames_to_faces_and_optical_flows(
         face_chw = torch.from_numpy(face_resized.transpose(2, 0, 1)).float() / 255.0
         face_tensors.append(face_chw)
 
-        # Calculate optical flow on augmented frames
-        optical_flow = get_optical_flow_between_frames(
-            prev_face if prev_face is not None else face_chw, face_chw
-        )
-        prev_face = face_chw
-
-        optical_flows.append(optical_flow)
-
-    return face_tensors, optical_flows
+    return face_tensors
 
 
 def stack_tensors(
@@ -289,8 +275,7 @@ def process_single_video(
     """
     suffix = "_aug" if apply_augmentation else ""
     out_path_faces = Path(f"{out_path_base}{suffix}_faces.pt")
-    out_path_flows = Path(f"{out_path_base}{suffix}_flows.pt")
-    if not purge and (out_path_faces.exists() and out_path_flows.exists()):
+    if not purge and out_path_faces.exists():
         print(
             f"Skipping {video_path}: output already exists -> {out_path_base}{suffix}"
         )
@@ -301,7 +286,7 @@ def process_single_video(
     detector = _get_face_detector()
     # Only pass augmenter if we want to apply augmentation for this run
     active_augmenter = augmenter if apply_augmentation else None
-    tensors, optical_flows = frames_to_faces_and_optical_flows(
+    tensors = frames_to_faces(
         frames,
         detector=detector,
         size=size,
@@ -310,18 +295,12 @@ def process_single_video(
         augmenter=active_augmenter,
     )
     faces_tensor = stack_tensors(tensors, size=size)
-    flows_tensor = stack_tensors(optical_flows, size=size)
     if faces_tensor.numel() == 0:
         print(f"No faces found for {video_path}; skipping save.")
         return None
 
     save_tensor(faces_tensor, str(out_path_faces))
     print(f"Saved {faces_tensor.shape} for {video_path} -> {out_path_faces}")
-    if flows_tensor.numel() == 0:
-        print(f"No optical flows found for {video_path}; skipping save.")
-        return None
-    save_tensor(flows_tensor, str(out_path_flows))
-    print(f"Saved {flows_tensor.shape} for {video_path} -> {out_path_flows}")
     return str(out_path_base) + suffix
 
 

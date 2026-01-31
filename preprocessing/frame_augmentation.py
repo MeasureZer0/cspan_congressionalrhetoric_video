@@ -2,8 +2,7 @@
 Frame-level augmentation transforms for preprocessing.
 
 This module provides augmentation transforms that are applied to individual frames
-during preprocessing, before optical flow computation. This ensures that optical flow
-is computed on the augmented frames.
+during preprocessing.
 """
 
 import random
