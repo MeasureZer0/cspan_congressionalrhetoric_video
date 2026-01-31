@@ -51,6 +51,47 @@ class PreprocessingConfig:
     # Augmentation
     augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
 
+    @classmethod
+    def load(cls, **overrides: dict[str, object]) -> "PreprocessingConfig":
+        """Load configuration from defaults and apply non-None overrides."""
+        config = cls()
+
+        for key, value in overrides.items():
+            if value is not None and hasattr(config, key):
+                setattr(config, key, value)
+
+        return config
+
+    def __post_init__(self) -> None:
+        assert self.label_file.exists(), f"Label file not found: {self.label_file}"
+        assert self.data_dir.exists(), f"Data directory not found: {self.data_dir}"
+
+    def __str__(self) -> str:
+        """String representation of the configuration."""
+        lines = [
+            f"Data dir: {self.data_dir}",
+            f"Label file: {self.label_file}",
+            f"Output dir: {self.out_dir}",
+            f"Frame skip: {self.frame_skip}",
+            f"Size: {self.size}",
+            f"Margin: {self.margin}",
+            f"Crop width ratio: {self.crop_width_ratio}",
+            f"Purge: {self.purge}",
+            f"Max workers: {self.max_workers}",
+            f"Augmentation enabled: {self.augmentation.enabled}",
+        ]
+        if self.augmentation.enabled:
+            lines.extend(
+                [
+                    f"  Rotation degrees: ±{self.augmentation.rotation_degrees}",
+                    f"  Brightness: ±{self.augmentation.brightness}",
+                    f"  Contrast: ±{self.augmentation.contrast}",
+                    f"  Saturation: ±{self.augmentation.saturation}",
+                    f"  Hue: ±{self.augmentation.hue}",
+                ]
+            )
+        return "\n".join(lines)
+
 
 @dataclass
 class FaceDetectionConfig:
@@ -62,8 +103,10 @@ class FaceDetectionConfig:
     nms_threshold: float = 0.3
     top_k: int = 5000
 
-    # Assert model file exists at config creation
-    assert model_path.exists(), (
-        f"Model file not found: {model_path}. "
-        "Please run scripts/download-weights.py to download the model weights."
-    )
+    def __post_init__(self) -> None:
+        """Validate configuration after initialization."""
+        if not self.model_path.exists():
+            raise FileNotFoundError(
+                f"Model file not found: {self.model_path}. "
+                "Please run scripts/download-weights.py to download the model weights."
+            )
