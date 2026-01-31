@@ -65,15 +65,13 @@ def detect_speakers_face(
 
     Args:
         frame (np.ndarray): Input frame in BGR format.
-            for detection (resized for speed). Default = 640.
-            If None, detection runs on the original resolution.
+        detector (cv2.FaceDetectorYN): The initialized face detector.
 
     Returns:
         Optional[Tuple[int, int, int, int]]: Bounding box of the detected face in
             (top, right, bottom, left) format.
             Returns None if no face is found.
     """
-    # Get detector for current process
 
     # Convert from BGR to RGB
     rgb = _rgb(frame)
