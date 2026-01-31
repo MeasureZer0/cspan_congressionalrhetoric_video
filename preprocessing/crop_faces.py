@@ -171,35 +171,30 @@ def crop_face(
     return rgb[top:bottom, left:right]
 
 
-def frames_to_faces(
+def detect_and_crop_faces(
     frames: List[np.ndarray],
     detector: cv2.FaceDetectorYN,
     size: tuple = (224, 224),
     margin: Optional[float] = 0.0,
     crop_width_ratio: float = 0.5,
-    augmenter: Optional[FrameAugmentation] = None,
-) -> List[torch.Tensor]:
+) -> List[np.ndarray]:
     """
-    Detect the face closest to horizontal center \
-    in each frame, crop, resize, and convert to a tensor.
+    Detect the face closest to horizontal center in each frame, crop, and resize.
+
     Args:
         frames (List[np.ndarray]): List of BGR frames (OpenCV).
+        detector (cv2.FaceDetectorYN): Face detector instance.
         size (tuple): Target size (H, W) for resizing.
         margin (float or None): Margin to add around detected face box.
-        augmenter (Optional[FrameAugmentation]): Augmenter to apply to frames
-            before converting to tensor.
+        crop_width_ratio (float): Ratio of width to crop from center.
+
     Returns:
-        List[torch.Tensor]: Tensor of shape (N, C, H, W) for N frames \
-            with detected faces.
+        List[np.ndarray]: List of cropped and resized face images (RGB).
     """
     if not frames:
-        return [torch.empty((0, 3, size[0], size[1]), dtype=torch.float32)]
+        return []
 
-    # Initialize augmentation parameters once for the entire sequence
-    if augmenter is not None:
-        augmenter.initialize_sequence_params()
-
-    face_tensors = []
+    face_crops = []
 
     for f in frames:
         _, w = f.shape[:2]
@@ -215,13 +210,40 @@ def frames_to_faces(
 
         # Resize the face
         face_resized = cv2.resize(face, size)
+        face_crops.append(face_resized)
 
-        # Apply augmentation BEFORE converting to tensor
+    return face_crops
+
+
+def convert_faces_to_tensors(
+    faces: List[np.ndarray],
+    augmenter: Optional[FrameAugmentation] = None,
+) -> List[torch.Tensor]:
+    """
+    Convert list of numpy face images to tensors, optionally applying augmentation.
+
+    Args:
+        faces (List[np.ndarray]): List of RGB face images (numpy).
+        augmenter (Optional[FrameAugmentation]): Augmenter to apply.
+
+    Returns:
+        List[torch.Tensor]: List of tensors (C, H, W).
+    """
+    if not faces:
+        return []
+
+    # Initialize augmentation parameters once for the entire sequence
+    if augmenter is not None:
+        augmenter.initialize_sequence_params()
+
+    face_tensors = []
+    for face in faces:
+        # Apply augmentation if provided
         if augmenter is not None:
-            face_resized = augmenter.augment_numpy_frame(face_resized)
+            face = augmenter.augment_numpy_frame(face)
 
         # Convert to tensor
-        face_chw = torch.from_numpy(face_resized.transpose(2, 0, 1)).float() / 255.0
+        face_chw = torch.from_numpy(face.transpose(2, 0, 1)).float() / 255.0
         face_tensors.append(face_chw)
 
     return face_tensors
@@ -263,45 +285,60 @@ def process_single_video(
     crop_width_ratio: float,
     purge: bool,
     augmenter: Optional[FrameAugmentation] = None,
-    apply_augmentation: bool = False,
 ) -> Optional[str]:
     """
-    Worker function: process one video, extract faces, save tensor.
-    Returns output path if successful, None otherwise.
+    Worker function: process one video, extract faces, save tensor(s).
 
-    Args:
-        apply_augmentation: If True and augmenter is provided, apply augmentation
-            and save with '_aug' suffix.
+    If augmenter is provided, saves both original (base path) and
+    augmented (base + '_aug') versions.
+
+    Returns base output path if successful, None otherwise.
     """
-    suffix = "_aug" if apply_augmentation else ""
-    out_path_faces = Path(f"{out_path_base}{suffix}_faces.pt")
-    if not purge and out_path_faces.exists():
-        print(
-            f"Skipping {video_path}: output already exists -> {out_path_base}{suffix}"
-        )
-        return str(out_path_base) + suffix
+    out_path_orig = Path(f"{out_path_base}_faces.pt")
+    out_path_aug = Path(f"{out_path_base}_aug_faces.pt") if augmenter else None
 
+    # Check existence
+    orig_exists = out_path_orig.exists()
+    aug_exists = (
+        out_path_aug.exists() if out_path_aug else True
+    )  # If no aug needed, "exists" is True
+
+    if not purge and orig_exists and aug_exists:
+        print(f"Skipping {video_path}: outputs already exist.")
+        return str(out_path_base)
+
+    # If we need to process, we do it once
     frames = extract_frames(path=video_path, frame_skip=frame_skip)
-
     detector = _get_face_detector()
-    # Only pass augmenter if we want to apply augmentation for this run
-    active_augmenter = augmenter if apply_augmentation else None
-    tensors = frames_to_faces(
+
+    # 1. Detect and crop
+    face_crops = detect_and_crop_faces(
         frames,
         detector=detector,
         size=size,
         margin=margin,
         crop_width_ratio=crop_width_ratio,
-        augmenter=active_augmenter,
     )
-    faces_tensor = stack_tensors(tensors, size=size)
-    if faces_tensor.numel() == 0:
+
+    if not face_crops:
         print(f"No faces found for {video_path}; skipping save.")
         return None
 
-    save_tensor(faces_tensor, str(out_path_faces))
-    print(f"Saved {faces_tensor.shape} for {video_path} -> {out_path_faces}")
-    return str(out_path_base) + suffix
+    # 2. Save Original if needed
+    if purge or not orig_exists:
+        tensors_orig = convert_faces_to_tensors(face_crops, augmenter=None)
+        faces_tensor_orig = stack_tensors(tensors_orig, size=size)
+        save_tensor(faces_tensor_orig, str(out_path_orig))
+        print(f"Saved {faces_tensor_orig.shape} -> {out_path_orig}")
+
+    # 3. Save Augmented if needed
+    if augmenter and (purge or not aug_exists):
+        tensors_aug = convert_faces_to_tensors(face_crops, augmenter=augmenter)
+        faces_tensor_aug = stack_tensors(tensors_aug, size=size)
+        save_tensor(faces_tensor_aug, str(out_path_aug))
+        print(f"Saved {faces_tensor_aug.shape} (Augmented) -> {out_path_aug}")
+
+    return str(out_path_base)
 
 
 def process_videos_in_parallel(
@@ -310,10 +347,6 @@ def process_videos_in_parallel(
     """
     Process all videos in parallel, each worker processes one video.
     Shows a progress bar that updates as each worker finishes.
-
-    When augmentation is enabled, processes each video twice:
-    - Once without augmentation (original)
-    - Once with augmentation (saved with '_aug' suffix)
     """
     random.seed(2025)  # For reproducibility
 
@@ -332,7 +365,7 @@ def process_videos_in_parallel(
         stem = Path(video_name).stem
         out_path_base = Path(config.out_dir) / str(stem)
 
-        # Always process original version
+        # Single job per video handles both original and augmented
         jobs.append(
             (
                 video_path,
@@ -343,25 +376,8 @@ def process_videos_in_parallel(
                 config.crop_width_ratio,
                 config.purge,
                 augmenter,
-                False,  # apply_augmentation=False for original
             )
         )
-
-        # If augmentation is enabled, also process augmented version
-        if config.augmentation.enabled:
-            jobs.append(
-                (
-                    video_path,
-                    out_path_base,
-                    config.frame_skip,
-                    config.size,
-                    config.margin,
-                    config.crop_width_ratio,
-                    config.purge,
-                    augmenter,
-                    True,  # apply_augmentation=True for augmented
-                )
-            )
 
     # Use as many workers as CPU cores if possible, but not more than jobs
     if config.max_workers is None:
