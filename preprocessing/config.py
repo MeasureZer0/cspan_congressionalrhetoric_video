@@ -5,12 +5,12 @@ from pathlib import Path
 from typing import Optional
 
 # Define paths to input data relative to this file
-script_dir = Path(__file__).resolve().parent
-project_root = script_dir.parent
-data_dir = project_root / "data"
-raw_videos_dir = data_dir / "raw_videos"
-label_file = data_dir / "labels.csv"
-models_dir = data_dir / "weights"
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+DATA_DIR = PROJECT_ROOT / "data"
+RAW_VIDEOS_DIR = DATA_DIR / "raw_videos"
+LABEL_FILE = DATA_DIR / "labels.csv"
+MODELS_DIR = DATA_DIR / "weights"
 
 
 @dataclass
@@ -34,12 +34,12 @@ class PreprocessingConfig:
     """Configuration for video preprocessing pipeline."""
 
     # Input/output paths
-    data_dir: Path = raw_videos_dir
-    label_file: Path = label_file
+    data_dir: Path = RAW_VIDEOS_DIR
+    label_file: Path = LABEL_FILE
 
     # Processing parameters
     frame_skip: int = 30
-    out_dir: Path = data_dir / "faces" / f"frame_skip_{frame_skip}"
+    out_dir: Path = DATA_DIR / "faces" / f"frame_skip_{frame_skip}"
     size: tuple[int, int] = (224, 224)
     margin: float = 0.1
     crop_width_ratio: float = 0.5
@@ -97,7 +97,7 @@ class PreprocessingConfig:
 class FaceDetectionConfig:
     """Configuration for YuNet face detector."""
 
-    model_path: Path = models_dir / "face_detection_yunet_2023mar.onnx"
+    model_path: Path = MODELS_DIR / "face_detection_yunet_2023mar.onnx"
     input_size: tuple[int, int] = (768, 576)
     score_threshold: float = 0.9
     nms_threshold: float = 0.3
