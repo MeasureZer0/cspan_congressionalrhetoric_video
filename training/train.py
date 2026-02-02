@@ -1,17 +1,28 @@
 import argparse
 import csv
 import random
+import os
 from datetime import datetime
 from pathlib import Path
+from typing import Tuple, List, Optional
 
 import torch
 import torch.nn.functional as F
-from faces_frames_dataset import FacesFramesDataset
+import numpy as np
+import pandas as pd
 from torch import nn
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence, pad_sequence
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision.models import ResNet18_Weights, resnet18
+from faces_frames_dataset import FacesFramesSSLDataset, FacesFramesSupervisedDataset, SimCLRDataset
+from transforms import VideoSimCLRTransform
+import torchvision.transforms.functional as TF
+from torchvision.transforms import RandomResizedCrop
 from tqdm import tqdm
+
+# ==========================================
+# Utility
+# ==========================================
 
 
 # Check for GPU availability and configure device
@@ -35,38 +46,21 @@ def _default_paths(frame_skip: int) -> tuple[Path, Path, Path, Path]:
     return img_dir, csv_file, weights_dir, logs_dir
 
 
-def collate_fn(
-    batch: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
-) -> tuple[list[torch.Tensor], list[torch.Tensor], torch.Tensor, torch.Tensor]:
-    """
-    Custom collate function for variable-length video sequences.
-    It ensures that sequences of different lengths are properly handled when batched.
+def ssl_collate_fn(batch):
+    v1_list = [item[0] for item in batch]
+    v2_list = [item[1] for item in batch]
+    lengths = torch.tensor([v.shape[0] for v in v1_list], dtype=torch.long)
+    return v1_list, v2_list, lengths
 
-    Args:
-        batch: list of tuples (images_tensor, flow_tensor, label)
+def supervised_collate_fn(batch):
+    faces = [item[0] for item in batch]
+    labels = torch.stack([item[1] for item in batch])
+    lengths = torch.tensor([f.shape[0] for f in faces], dtype=torch.long)
+    return faces, labels, lengths
 
-    Returns:
-        batch_image: list of tensors, each of shape (seq_len, C, H, W)
-        batch_flow: list of tensors, each of shape (seq_len, C, H, W)
-        labels: tensor of shape (batch_size,)
-        lengths: tensor containing sequence lengths for each batch element
-    """
-    # NOTE: do not move device resolution to module scope; resolve at call time
-    batch_image = [item[0] for item in batch]
-    batch_flow = [item[1] for item in batch]
-    labels = torch.stack([item[2] for item in batch]).long()
-    lengths = torch.tensor([seq.shape[0] for seq in batch_image], dtype=torch.long)
-    return batch_image, batch_flow, labels, lengths
-
-
-# DataLoader parameters
-params = {
-    "batch_size": 2,  # Batch size
-    "shuffle": True,  # Randomize sequence order each epoch
-    "num_workers": 0,  # Data loading in the main process
-    "collate_fn": collate_fn,
-}
-
+# ==========================================
+# Models
+# ==========================================
 
 def build_resnet_cnn(input_channels: int) -> tuple[nn.Module, int]:
     """
@@ -83,147 +77,84 @@ def build_resnet_cnn(input_channels: int) -> tuple[nn.Module, int]:
     """
     model = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
     if input_channels == 2:
-        model.conv1 = nn.Conv2d(
-            input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False
-        )
-
-    for name, param in model.named_parameters():
-        if not (
-            (name.startswith("conv1") and input_channels == 2)
-            or name.startswith("layer4")
-        ):
-            param.requires_grad = False
+        model.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
 
     feature_size = model.fc.in_features
-    # remove classification layer
-    model.fc = nn.Identity()  # type: ignore
-    # model will be moved to the target device by the caller (e.g. model.to(device))
-    return model, feature_size
-
-
-def build_small_cnn(input_channels: int) -> tuple[nn.Module, int]:
-    """
-    Builds a small CNN model that can process images with an \
-        arbitrary number of channels.
-
-    Args:
-        input_channels: number of input channels (e.g., 3 for RGB, 2 for optical flow)
-
-    Returns:
-        model: CNN feature extractor
-        feature_size: dimensionality of the extracted feature vector
-    """
-    model = nn.Sequential(
-        nn.Conv2d(input_channels, 32, kernel_size=3, stride=1, padding=1),
-        nn.BatchNorm2d(32),
-        nn.ReLU(),
-        nn.MaxPool2d(2),
-        nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
-        nn.BatchNorm2d(64),
-        nn.ReLU(),
-        nn.MaxPool2d(2),
-        nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
-        nn.BatchNorm2d(128),
-        nn.ReLU(),
-        nn.AdaptiveAvgPool2d((1, 1)),
-        nn.Flatten(),
-    )
-    feature_size = 128
+    model.fc = nn.Identity()
     return model, feature_size
 
 
 class FeatureAggregatingLSTM(nn.Module):
     """
-    A hybrid architecture combining CNN feature extraction and LSTM temporal modeling.
-    Each frame and optical flow pair is processed through CNNs, concatenated, \
-        and fed into LSTM.
+    CNN + LSTM: Extract frame features and model temporal dynamics.
     """
 
-    def __init__(
-        self,
-        hidden_size: int = 8,
-        num_layers: int = 1,
-        num_classes: int = 3,
-        cnn_type: str = "resnet",
-    ) -> None:
+    def __init__(self, hidden_size=64, num_layers=1, num_classes=3):
         super().__init__()
-
-        # Separate CNN extractors for RGB frames and optical flow
-        if cnn_type == "resnet":
-            print(f"CNN MODEL: {cnn_type}")
-            self.image_extractor, feature_size = build_resnet_cnn(3)
-            self.flow_extractor, _ = build_resnet_cnn(2)
-        elif cnn_type == "small":
-            print(f"CNN MODEL: {cnn_type}")
-            self.image_extractor, feature_size = build_small_cnn(3)
-            self.flow_extractor, _ = build_small_cnn(2)
-        else:
-            raise ValueError(f"Unknown cnn_type: {cnn_type}")
-
-        # LSTM processes the concatenated feature vectors over time
+        self.image_extractor, self.feature_dim = build_resnet_cnn(3)
         self.lstm = nn.LSTM(
-            2 * feature_size,
+            input_size=self.feature_dim,
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
-            bidirectional=False,
-            dropout=0.5 if num_layers > 1 else 0.0,
         )
+        self.num_classes = num_classes
+        self.classifier = nn.Linear(hidden_size, num_classes)
 
-        self.dropout = nn.Dropout(0.4)
-
-        # Final linear layer for classification at each time step
-        self.fc = nn.Linear(hidden_size, num_classes)
-
-    def forward(
-        self,
-        batch_image: list[torch.Tensor],
-        batch_flow: list[torch.Tensor],
-        lengths: torch.Tensor,
-    ) -> torch.Tensor:
+    def forward(self, batch_video_list: List[torch.Tensor], lengths: torch.Tensor):
         """
-        Forward pass of the model. Extracts features per frame, concatenates them,
-        and processes the temporal sequence using an LSTM.
-
-        Args:
-            batch_image: list of tensors (B elements, each [seq_len, 3, H, W])
-            batch_flow: list of tensors (B elements, each [seq_len, 2, H, W])
-            lengths: tensor with the actual lengths of each sequence in the batch
-
-        Returns:
-            logits: tensor of shape [B, num_classes]
+        Standard forward for supervised training: returns logits.
         """
-        features = []
-        device = next(self.parameters()).device
-        for seq_image, seq_flow in zip(batch_image, batch_flow, strict=False):
-            # move inputs to the same device as the model parameters
-            seq_image = seq_image.to(device)
-            seq_flow = seq_flow.to(device)
-            image_features = self.image_extractor(seq_image)  # [T, feat_dim]
-            flow_features = self.flow_extractor(seq_flow)  # [T, feat_dim]
-            seq_features = torch.cat([image_features, flow_features], dim=1)
-            features.append(seq_features)
-
-        # Pad sequences to the same length
+        device = _get_device()
+        features = [self.image_extractor(seq.to(device)) for seq in batch_video_list]
         padded = pad_sequence(features, batch_first=True)
-        # Pack sequences for LSTM to skip padded elements
         packed = pack_padded_sequence(
-            padded, lengths, batch_first=True, enforce_sorted=False
+            padded, lengths.cpu(), batch_first=True, enforce_sorted=False
         )
-        packed_output, _ = self.lstm(packed)
-
-        # Unpack sequences back to padded representation
-        output_padded, _ = pad_packed_sequence(packed_output, batch_first=True)
-        avg_pool = torch.sum(output_padded, dim=1) / lengths.to(device).unsqueeze(1)
-
-        avg_pool = self.dropout(avg_pool)
-
-        logits = self.fc(avg_pool)
+        _, (hn, _) = self.lstm(packed)
+        last_hidden = hn[-1]
+        logits = self.classifier(last_hidden)
         return logits
 
+    def forward_hidden(self, batch_video_list: List[torch.Tensor], lengths: torch.Tensor):
+        """
+        Forward for SSL: returns LSTM hidden state without classifier.
+        """
+        device = _get_device()
+        features = [self.image_extractor(seq.to(device)) for seq in batch_video_list]
+        padded = pad_sequence(features, batch_first=True)
+        packed = pack_padded_sequence(
+            padded, lengths.cpu(), batch_first=True, enforce_sorted=False
+        )
+        _, (hn, _) = self.lstm(packed)
+        last_hidden = hn[-1]
+        return last_hidden
+
+
+class SimCLRProjectionWrapper(nn.Module):
+    """Wrap LSTM encoder with a projection head for SimCLR."""
+
+    def __init__(self, encoder: FeatureAggregatingLSTM, projection_dim=256):
+        super().__init__()
+        self.encoder = encoder
+        lstm_out_dim = encoder.lstm.hidden_size
+        self.projector = nn.Sequential(
+            nn.Linear(lstm_out_dim, lstm_out_dim),
+            nn.ReLU(),
+            nn.Linear(lstm_out_dim, projection_dim),
+        )
+
+    def forward(self, x, lengths):
+        h = self.encoder.forward_hidden(x, lengths)
+        z = self.projector(h)
+        return z
+    
+# ==========================================
+# Training
+# ==========================================
 
 def stratified_split(
-    dataset: FacesFramesDataset,
+    dataset: FacesFramesSupervisedDataset,
     fractions: tuple[float, float, float],
 ) -> tuple[list[int], list[int], list[int]]:
     """
@@ -269,147 +200,110 @@ def stratified_split(
 
     return train_indices, val_indices, test_indices
 
+class NTXentLoss(nn.Module):
+    def __init__(self, temperature=0.5):
+        super().__init__()
+        self.temperature = temperature
+    
+    def forward(self, z1, z2):
+        z1 = F.normalize(z1, dim=1)
+        z2 = F.normalize(z2, dim=1)
+        
+        # [2*B, D]
+        z = torch.cat([z1, z2], dim=0)
+        
+        # [2*B, 2*B]
+        sim_matrix = torch.mm(z, z.T) / self.temperature
+        
+        batch_size = z1.size(0)
+        labels = torch.arange(batch_size, device=z1.device)
+        labels = torch.cat([labels + batch_size, labels])
+        
+        return F.cross_entropy(sim_matrix, labels)
 
-def run_training(
-    *,
-    frame_skip: int = 30,
-    epochs: int = 10,
-    batch_size: int = 2,
-    include_augmented: bool = False,
-    output_csv: Path | str | None = None,
-    cnn_type: str = "resnet",
-) -> None:
-    """
-    Run the full training loop.
-
-    Args:
-        epochs: number of training epochs
-        batch_size: batch size for training
-        data_multiplier: how many versions of each video used for training
-        augmentation_strength: "light", "standard", or "heavy"
-        output_csv: path to output CSV file to append training results
-    """
-
-    device = _get_device()
-    torch.manual_seed(2)
-    random.seed(2)
-
-    # Resolve default paths if not provided
-    img_dir, csv_file, weights_dir, logs_dir = _default_paths(frame_skip=frame_skip)
-
-    params = {
-        "batch_size": batch_size,
-        "shuffle": True,
-        "num_workers": 0,
-        "collate_fn": collate_fn,
-    }
-
-    original_dataset = FacesFramesDataset(
-        csv_file, img_dir, include_augmented=include_augmented
-    )
-
-    # Use stratified split: put around 60% train, 20% val, 20% test
-    train_indices, val_indices, _ = stratified_split(original_dataset, (0.8, 0.2, 0.0))
-
-    print(f"Original dataset: {len(original_dataset)} samples")
-    print(f"Train split: {len(train_indices)} samples")
-
-    train_dataset = Subset(original_dataset, train_indices)
-
-    print(f"Training samples (after augmentation): {len(train_dataset)}")
-    print(f"Validation samples: {len(val_indices)}")
-
-    training_generator = DataLoader(train_dataset, **params)
-    validation_generator = DataLoader(Subset(original_dataset, val_indices), **params)
-    # test_generator = DataLoader(Subset(original_dataset, test_indices), **params)
-
-    model = FeatureAggregatingLSTM(num_classes=3, cnn_type=cnn_type).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-3)
-
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=3
-    )
-
-    # Prepare output CSV path
-    if output_csv is None:
-        output_path = (
-            logs_dir
-            / f"training_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        )
-    else:
-        output_path = Path(output_csv)
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # If file does not exist or is empty, write header
-    if not output_path.exists() or output_path.stat().st_size == 0:
-        with open(output_path, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["epoch", "val_loss", "val_acc"])
-            f.flush()
-
-    for epoch in range(epochs):
+def train_ssl(args, device, img_dir, weights_dir):
+    print("--- STARTING SSL PRETRAINING (SimCLR) ---")
+    base_ds = FacesFramesSSLDataset(img_dir)
+    transform = VideoSimCLRTransform(size=224)
+    ssl_ds = SimCLRDataset(base_ds, transform)
+    loader = DataLoader(ssl_ds, batch_size=args.batch_size, shuffle=True, collate_fn=ssl_collate_fn)
+    encoder = FeatureAggregatingLSTM().to(device)
+    model = SimCLRProjectionWrapper(encoder).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    nt_xent_loss = NTXentLoss()
+    total_loss = 0
+    for epoch in range(args.epochs):
         model.train()
-        total_loss = 0.0
-        total_correct = 0
-        total_samples = 0
-        for batch_image, batch_flow, labels, lengths in tqdm(
-            training_generator, desc=f"Epoch {epoch + 1}"
-        ):
+        pbar = tqdm(loader, desc=f"SSL Epoch {epoch+1}", leave=True)
+        for v1, v2, lengths in pbar:
             optimizer.zero_grad()
+            
+            z1 = model(v1, lengths)
+            z2 = model(v2, lengths)
+            
+            loss = nt_xent_loss(z1, z2)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+            pbar.set_postfix(loss=loss.item())
+    
+    save_path = weights_dir / "ssl_backbone.pt"
+    torch.save(encoder.state_dict(), save_path)
+    print(f"SSL Backbone saved to {save_path}")
+
+def train_supervised(args, device, img_dir, csv_file, weights_dir):
+    print("--- STARTING SUPERVISED TRAINING ---")
+    full_ds = FacesFramesSupervisedDataset(csv_file, img_dir)
+    train_idx, val_idx, test_idx = stratified_split(full_ds)
+
+    train_ds = torch.utils.data.Subset(full_ds, train_idx)
+    val_ds = torch.utils.data.Subset(full_ds, val_idx)
+    test_ds = torch.utils.data.Subset(full_ds, test_idx)
+
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=supervised_collate_fn)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, collate_fn=supervised_collate_fn)
+    test_loader = DataLoader(test_ds, batch_size=args.batch_size, collate_fn=supervised_collate_fn)
+
+    model = FeatureAggregatingLSTM().to(device)
+    if args.load_ssl:
+        ssl_path = weights_dir / "ssl_backbone.pt"
+        if ssl_path.exists():
+            model.load_state_dict(torch.load(ssl_path, map_location=device))
+            print("Loaded SSL weights!")
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    criterion = nn.CrossEntropyLoss()
+
+    for epoch in range(args.epochs):
+        model.train()
+        correct, total = 0, 0
+        for faces, labels, lengths in tqdm(train_loader, desc=f"Supervised Epoch {epoch+1}"):
             labels = labels.to(device)
-            logits = model(batch_image, batch_flow, lengths)
-
-            loss = sequence_loss(logits, labels)
-            batch_correct, batch_total = sequence_accuracy(logits, labels)
-
+            optimizer.zero_grad()
+            logits = model(faces, lengths)
+            loss = criterion(logits, labels)
             loss.backward()
             optimizer.step()
 
-            total_loss += loss.item() * labels.size(0)
-            total_correct += batch_correct
-            total_samples += batch_total
-        avg_train_loss = total_loss / total_samples
-        avg_train_acc = total_correct / total_samples
-        print(
-            f"Epoch {epoch + 1}: train loss = {avg_train_loss:.4f}, "
-            f"acc = {avg_train_acc:.4f}"
-        )
+            preds = logits.argmax(dim=1)
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
+    
+        train_acc = correct / total
 
-        # Run validation phase after each epoch
-        val_loss, val_acc = evaluate(
-            model,
-            validation_generator,
-            device,
-            desc="Validation",
-        )
-        scheduler.step(val_loss)
-        print(f"Validation: loss = {val_loss:.4f}, acc = {val_acc * 100:.2f}%")
+        model.eval()
+        val_correct, val_total = 0, 0
+        with torch.no_grad():
+            for faces, labels, lengths in val_loader:
+                labels = labels.to(device)
+                logits = model(faces, lengths)
+                preds = logits.argmax(dim=1)
+                val_correct += (preds == labels).sum().item()
+                val_total += labels.size(0)
+        
+        val_acc = val_correct / val_total
 
-        # Append epoch validation loss to CSV and flush to disk
-        with open(output_path, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow([epoch + 1, f"{val_loss:.6f}", f"{val_acc:.6f}"])
-            f.flush()
-
-    # Final test evaluation after all epochs, right not we're not using it
-    # test_loss, test_acc = evaluate(model, test_generator, device, desc="Test")
-    # print(f"Test: loss = {test_loss:.4f}, acc = {test_acc * 100:.2f}%")
-
-    # Save final model to disk
-    final_model_path = weights_dir / f"final_model_epoch_{epochs}.pt"
-    weights_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        model.state_dict(),
-        final_model_path,
-    )
-    print(f"Final model saved: {final_model_path}")
-
-    # Append final test loss to CSV and flush
-    # with open(output_path, "a", newline="", encoding="utf-8") as f:
-    #     writer = csv.writer(f)
-    #     writer.writerow(["final", f"{test_loss:.6f}", f"{test_acc:.6f}"])
-    #     f.flush()
+        print(f"Epoch {epoch+1}: Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
 
 
 def sequence_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
@@ -479,55 +373,19 @@ def evaluate(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description=("Train the video classification model.")
-    )
-    parser.add_argument(
-        "--frame-skip",
-        type=int,
-        default=30,
-        help="the number of frames skipped during preprocessing.",
-    )
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=10,
-        help="Number of training epochs.",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=2,
-        help="Batch size for training.",
-    )
-    parser.add_argument(
-        "--include-augmented",
-        action="store_true",
-        help="Whether to include augmented data in training (default: False).",
-    )
-    parser.add_argument(
-        "--output-csv",
-        type=str,
-        default=None,
-        help=(
-            "Path to output CSV file to append training results. "
-            "Default is logs/training_results_{datetime}.csv."
-        ),
-    )
-    parser.add_argument(
-        "--cnn-type",
-        type=str,
-        default="resnet",
-        choices=["resnet", "small"],
-        help="Type of CNN: 'resnet' (pretrained) or 'small' (custom lightweight CNN).",
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", type=str, choices=["ssl", "supervised"], required=True)
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--load-ssl", action="store_true")
+    parser.add_argument("--frame-skip", type=int, default=30)
     args = parser.parse_args()
 
-    run_training(
-        frame_skip=args.frame_skip,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        output_csv=args.output_csv,
-        cnn_type=args.cnn_type,
-        include_augmented=args.include_augmented,
-    )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    img_dir, csv_file, weights_dir, logs_dir = _default_paths(args.frame_skip)
+
+    if args.mode == "ssl":
+        train_ssl(args, device, img_dir, weights_dir)
+    else:
+        train_supervised(args, device, img_dir, csv_file, weights_dir)

@@ -1,126 +1,163 @@
 import os
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Literal
 
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
-
-# Define transform types
-Transform = Optional[Callable[[Any], Any]]
+import numpy as np
 
 
-class FacesFramesDataset(Dataset):
+class FacesFramesSSLDataset(Dataset):
     """
-    PyTorch Dataset for loading preprocessed face tensors from .pt files
-    and their corresponding labels from a CSV file.
+    PyTorch Dataset for loading preprocessed face tensors
+    from .pt files without labels.
 
-    Supports loading both original and augmented versions (with '_aug' suffix).
-    When augmented versions exist, they are treated as separate training samples.
+    Used as a base dataset for SSL methods.
     """
-
-    def __init__(
-        self,
-        csv_file: Path,
-        img_dir: Path,
-        transform: Transform = None,
-        target_transform: Transform = None,
-        include_augmented: bool = False,
-    ) -> None:
+    def __init__(self, img_dir: Path):
         """
         Args:
-            csv_file (Path): Path to the CSV file with labels.
-            img_dir (Path): Directory with preprocessed .pt face tensors.
-            transform (callable, optional): Optional transform to apply to face tensors.
-            target_transform (callable, optional): Optional transform applied to labels.
-            include_augmented (bool): Whether to include augmented versions (_aug files)
-                as additional training samples. Default is False.
+            img_dir (Path): Directory containing *_faces.pt and *_flows.pt files.
         """
-        # Load CSV with labels
-        self.csv_file = pd.read_csv(csv_file)
+        self.img_dir = Path(img_dir)
+        self.samples = self._build_sample()
 
-        # Directory containing preprocessed face tensors
-        self.img_dir = img_dir
-
-        # Optional transformations for input and target
-        self.transform = transform
-        self.target_transform = target_transform
-
-        # Mapping string labels to integer classes
-        # Needed because models expect numeric labels
-        self.classes = {"negative": 0, "neutral": 1, "positive": 2}
-
-        # Build index of available samples (original + augmented)
-        self.samples = self._build_sample_index(include_augmented)
-
-    def _build_sample_index(self, include_augmented: bool) -> list[tuple[str, str]]:
+    def _build_sample(self):
         """
-        Build an index of all available samples.
+        Scan directory and collect all available sample stems.
 
         Returns:
-            List of tuples (stem, label_str) for each available sample.
-            If include_augmented is True, includes both original and '_aug' versions.
+            list[str]: List of file stems without suffixes.
         """
-        samples = []
+        files = sorted(self.img_dir.glob("*_faces.pt"))
+        return [f.stem.replace("_faces", "") for f in files]
 
-        for idx in range(len(self.csv_file)):
-            video_name = str(self.csv_file.iloc[idx, 0])
-            label_str = str(self.csv_file.iloc[idx, 1]).strip()
-            stem = Path(video_name).stem
-
-            # Check if original files exist
-            face_path = os.path.join(self.img_dir, f"{stem}_faces.pt")
-            flow_path = os.path.join(self.img_dir, f"{stem}_flows.pt")
-
-            if os.path.exists(face_path) and os.path.exists(flow_path):
-                samples.append((stem, label_str))
-
-            # Check if augmented files exist
-            if include_augmented:
-                aug_face_path = os.path.join(self.img_dir, f"{stem}_aug_faces.pt")
-                aug_flow_path = os.path.join(self.img_dir, f"{stem}_aug_flows.pt")
-
-                if os.path.exists(aug_face_path) and os.path.exists(aug_flow_path):
-                    samples.append((f"{stem}_aug", label_str))
-
-        return samples
-
-    def __len__(self) -> int:
-        # Return the total number of samples including augmented versions
+    def __len__(self):
+        """
+        Returns:
+            int: Number of available samples.
+        """
         return len(self.samples)
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx):
         """
-        Load a single sample (faces tensor and label) given an index.
+        Load a single sample (faces tensor).
 
         Args:
-            idx (int): Index of the sample to fetch.
+            idx (int): Sample index.
 
         Returns:
-            tuple[torch.Tensor, torch.Tensor, torch.Tensor]: faces tensor, flows tensor,
-                and label tensor
+            tuple[Tensor, Tensor]: faces tensor.
         """
-        # Get stem and label from the sample index
+        stem = self.samples[idx]
+
+        face_path = self.img_dir / f"{stem}_faces.pt"
+
+        faces = torch.load(face_path)
+
+        return faces
+
+
+class FacesFramesSupervisedDataset(Dataset):
+    """
+    PyTorch Dataset for supervised training.
+
+    Loads face tensors and corresponding labels from CSV.
+    Returns (faces, label).
+    """
+
+    def __init__(self, csv_file: Path, img_dir: Path):
+        """
+        Args:
+            csv_file (Path): CSV file containing labels.
+            img_dir (Path): Directory with preprocessed tensors.
+        """
+        self.img_dir = Path(img_dir)
+        self.csv = pd.read_csv(csv_file)
+
+        self.classes = {"negative": 0, "neutral": 1, "positive": 2}
+        self.samples = self._build_index()
+
+    def _build_index(self):
+        """
+        Build index of valid samples based on CSV and existing files.
+
+        Returns:
+            list[tuple[str, str]]: List of (stem, label_string).
+        """
+        samples = []
+        for i in range(len(self.csv)):
+            video_name = str(self.csv.iloc[i, 0])
+            label_str = str(self.csv.iloc[i, 1]).strip()
+
+            stem = Path(video_name).stem
+            if (self.img_dir / f"{stem}_faces.pt").exists():
+                samples.append((stem, label_str))
+        return samples
+
+    def __len__(self):
+        """
+        Returns:
+            int: Number of labeled samples.
+        """
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        """
+        Load tensors and label for supervised learning.
+
+        Args:
+            idx (int): Sample index.
+
+        Returns:
+            tuple[Tensor, Tensor, Tensor]: faces, flows and label tensor.
+        """
         stem, label_str = self.samples[idx]
 
-        # Construct the full path to the .pt files
-        face_path = os.path.join(self.img_dir, f"{stem}_faces.pt")
-        flow_path = os.path.join(self.img_dir, f"{stem}_flows.pt")
+        faces = torch.load(self.img_dir / f"{stem}_faces.pt")
 
-        # Load the preprocessed frames tensor
-        faces = torch.load(face_path)
-        flows = torch.load(flow_path)
-
-        # Load and convert string label to tensor
         label = torch.tensor(self.classes[label_str], dtype=torch.long)
 
-        # Apply optional transformations to faces tensor only
-        if self.transform:
-            faces = self.transform(faces)
+        return faces, label
 
-        # Apply optional transformations to label tensor
-        if self.target_transform:
-            label = self.target_transform(label)
+class SimCLRDataset(Dataset):
+    """
+    Wrapper Dataset for SimCLR ssl.
 
-        # Return faces, flows and label tensors
-        return faces, flows, label
+    Takes a base dataset and returns two augmented views
+    of the same sample: (view1, view2).
+    """
+
+    def __init__(self, base_dataset: Dataset, transform):
+        """
+        Args:
+            base_dataset (Dataset): Dataset returning tensors without labels.
+            transform (Callable): Augmentation transform.
+        """
+        self.base = base_dataset
+        self.transform = transform
+
+    def __len__(self):
+        """
+        Returns:
+            int: Number of samples in base dataset.
+        """
+        return len(self.base)
+
+    def __getitem__(self, idx):
+        """
+        Generate two augmented views of the same sample.
+
+        Args:
+            idx (int): Sample index.
+
+        Returns:
+            tuple[Tensor, Tensor]: Two augmented tensors.
+        """
+        faces = self.base[idx]
+
+        v1 = self.transform(faces)
+        v2 = self.transform(faces)
+
+        return v1, v2
