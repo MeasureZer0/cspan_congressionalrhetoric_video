@@ -56,7 +56,6 @@ def extract_frames(
         # - End of the video has been reached, OR
         # - An error occurred while reading
         if not ret:
-            print("End of video or error occurred.")
             break
 
         # Store only every N-th frame
@@ -80,5 +79,5 @@ def extract_frames(
     # cv2.destroyAllWindows()
 
     # Print how many frames were captured
-    print(f"Frames captured: {len(frames)}")
+    print(f"Frames captured from {path}: {len(frames)}")
     return frames

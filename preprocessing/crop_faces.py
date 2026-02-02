@@ -1,8 +1,8 @@
 """Video Preprocessing Module"""
 
-import argparse
 import concurrent.futures
 import os
+import random
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -10,36 +10,40 @@ import cv2  # OpenCV for video processing
 import numpy as np  # NumPy for storing frames as arrays
 import pandas as pd  # Pandas for reading CSV labels
 import torch
+from config import FaceDetectionConfig, PreprocessingConfig
 from extract_frames import extract_frames
-from raft_optical_flow import get_optical_flow_between_frames
+from frame_augmentation import FrameAugmentation
 from tqdm import tqdm
 
-# Define paths to input data relative to this file
-script_dir = Path(__file__).resolve().parent
-project_root = script_dir.parent
-data_dir = project_root / "data"
-raw_videos_dir = data_dir / "raw_videos"
-label_file = data_dir / "labels.csv"
-models_dir = data_dir / "weights"
+# Load face detection config
+face_config = None
 
-# Assert all required files exist
-assert (label_file).exists(), f"Label file not found: {label_file}"
-assert raw_videos_dir.exists(), f"Raw videos directory not found: {raw_videos_dir}"
+# Process-local face detector (initialized lazily in each worker)
+_face_detector = None
 
-assert (models_dir / "face_detection_yunet_2023mar.onnx").exists(), (
-    f"Model file not found: {models_dir / 'face_detection_yunet_2023mar.onnx'}. "
-    "Please run scripts/download-weights.py to download the model weights."
-)
 
-# Initialise YuNet face detector
-face_detector = cv2.FaceDetectorYN.create(
-    model=str(models_dir / "face_detection_yunet_2023mar.onnx"),
-    config="",
-    input_size=(768, 576),
-    score_threshold=0.9,
-    nms_threshold=0.3,
-    top_k=5000,
-)
+def _get_face_detector() -> cv2.FaceDetectorYN:
+    """Get or create face detector for current process.
+
+    This lazy initialization ensures each worker process gets its own
+    detector instance, avoiding pickling issues with ProcessPoolExecutor.
+    """
+
+    global _face_detector
+    if _face_detector is None:
+        global face_config
+        if face_config is None:
+            face_config = FaceDetectionConfig()
+
+        _face_detector = cv2.FaceDetectorYN.create(
+            model=str(face_config.model_path),
+            config="",
+            input_size=face_config.input_size,
+            score_threshold=face_config.score_threshold,
+            nms_threshold=face_config.nms_threshold,
+            top_k=face_config.top_k,
+        )
+    return _face_detector
 
 
 def _rgb(frame: np.ndarray) -> np.ndarray:
@@ -53,25 +57,27 @@ def _rgb(frame: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
 
-def detect_speakers_face(frame: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+def detect_speakers_face(
+    frame: np.ndarray, detector: cv2.FaceDetectorYN
+) -> Optional[Tuple[int, int, int, int]]:
     """
     Detect the most central face in the given video frame using YuNet.
 
     Args:
         frame (np.ndarray): Input frame in BGR format.
-            for detection (resized for speed). Default = 640.
-            If None, detection runs on the original resolution.
+        detector (cv2.FaceDetectorYN): The initialized face detector.
 
     Returns:
         Optional[Tuple[int, int, int, int]]: Bounding box of the detected face in
             (top, right, bottom, left) format.
             Returns None if no face is found.
     """
+
     # Convert from BGR to RGB
     rgb = _rgb(frame)
     h, w = rgb.shape[:2]
-    face_detector.setInputSize((w, h))
-    _, faces = face_detector.detect(rgb)
+    detector.setInputSize((w, h))
+    _, faces = detector.detect(rgb)
     if faces is None or len(faces) == 0:
         return None
 
@@ -159,35 +165,34 @@ def crop_face(
     right = min(w, right)
     if bottom <= top or right <= left:
         return None
+
     return rgb[top:bottom, left:right]
 
 
-def frames_to_faces_and_optical_flows(
+def detect_and_crop_faces(
     frames: List[np.ndarray],
+    detector: cv2.FaceDetectorYN,
     size: tuple = (224, 224),
     margin: Optional[float] = 0.0,
     crop_width_ratio: float = 0.5,
-) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+) -> List[np.ndarray]:
     """
-    Detect the face closest to horizontal center \
-    in each frame, crop, resize, and convert to a tensor.
-    We also compute optical flow between frames.
+    Detect the face closest to horizontal center in each frame, crop, and resize.
+
     Args:
         frames (List[np.ndarray]): List of BGR frames (OpenCV).
+        detector (cv2.FaceDetectorYN): Face detector instance.
         size (tuple): Target size (H, W) for resizing.
         margin (float or None): Margin to add around detected face box.
+        crop_width_ratio (float): Ratio of width to crop from center.
+
     Returns:
-        List[torch.Tensor]: Tensor of shape (N, C, H, W) for N frames \
-            with detected faces.
-        List[torch.Tensor]: List of optical flow tensors between consecutive frames.
+        List[np.ndarray]: List of cropped and resized face images (RGB).
     """
     if not frames:
-        return [torch.empty((0, 3, size[0], size[1]), dtype=torch.float32)], []
+        return []
 
-    face_tensors = []
-    optical_flows = []
-
-    prev_face = None
+    face_crops = []
 
     for f in frames:
         _, w = f.shape[:2]
@@ -195,25 +200,51 @@ def frames_to_faces_and_optical_flows(
         start = (w - new_w) // 2
         f_cropped = f[:, start : start + new_w, :]
 
-        loc = detect_speakers_face(f_cropped)
+        loc = detect_speakers_face(f_cropped, detector=detector)
         face = crop_face(f_cropped, loc, margin=margin)
         if face is None:
             # skip frames without a detected face
             continue
 
-        # Resize the face and convert directly to tensor
+        # Resize the face
         face_resized = cv2.resize(face, size)
-        face_chw = torch.from_numpy(face_resized.transpose(2, 0, 1)).float() / 255.0
+        face_crops.append(face_resized)
+
+    return face_crops
+
+
+def convert_faces_to_tensors(
+    faces: List[np.ndarray],
+    augmenter: Optional[FrameAugmentation] = None,
+) -> List[torch.Tensor]:
+    """
+    Convert list of numpy face images to tensors, optionally applying augmentation.
+
+    Args:
+        faces (List[np.ndarray]): List of RGB face images (numpy).
+        augmenter (Optional[FrameAugmentation]): Augmenter to apply.
+
+    Returns:
+        List[torch.Tensor]: List of tensors (C, H, W).
+    """
+    if not faces:
+        return []
+
+    # Initialize augmentation parameters once for the entire sequence
+    if augmenter is not None:
+        augmenter.initialize_sequence_params()
+
+    face_tensors = []
+    for face in faces:
+        # Apply augmentation if provided
+        if augmenter is not None:
+            face = augmenter.augment_numpy_frame(face)
+
+        # Convert to tensor
+        face_chw = torch.from_numpy(face.transpose(2, 0, 1)).float() / 255.0
         face_tensors.append(face_chw)
-        # Then calculate optical flow
-        optical_flow = get_optical_flow_between_frames(
-            prev_face if prev_face is not None else face_chw, face_chw
-        )
-        prev_face = face_chw
 
-        optical_flows.append(optical_flow)
-
-    return face_tensors, optical_flows
+    return face_tensors
 
 
 def stack_tensors(
@@ -249,63 +280,109 @@ def process_single_video(
     frame_skip: int,
     size: tuple,
     margin: float,
+    crop_width_ratio: float,
     purge: bool,
+    augmenter: Optional[FrameAugmentation] = None,
 ) -> Optional[str]:
     """
-    Worker function: process one video, extract faces, save tensor.
-    Returns output path if successful, None otherwise.
+    Worker function: process one video, extract faces, save tensor(s).
+
+    If augmenter is provided, saves both original (base path) and
+    augmented (base + '_aug') versions.
+
+    Returns base output path if successful, None otherwise.
     """
-    out_path_faces = Path(f"{out_path_base}_faces.pt")
-    out_path_flows = Path(f"{out_path_base}_flows.pt")
-    if not purge and (out_path_faces.exists() and out_path_flows.exists()):
-        print(f"Skipping {video_path}: output already exists -> {out_path_base}")
+    out_path_orig = Path(f"{out_path_base}_faces.pt")
+    out_path_aug = Path(f"{out_path_base}_aug_faces.pt") if augmenter else None
+
+    # Check existence
+    orig_exists = out_path_orig.exists()
+    aug_exists = (
+        out_path_aug.exists() if out_path_aug else True
+    )  # If no aug needed, "exists" is True
+
+    if not purge and orig_exists and aug_exists:
+        print(f"Skipping {video_path}: outputs already exist.")
         return str(out_path_base)
 
+    # If we need to process, we do it once
     frames = extract_frames(path=video_path, frame_skip=frame_skip)
-    tensors, optical_flows = frames_to_faces_and_optical_flows(
-        frames, size=size, margin=margin
+    detector = _get_face_detector()
+
+    # 1. Detect and crop
+    face_crops = detect_and_crop_faces(
+        frames,
+        detector=detector,
+        size=size,
+        margin=margin,
+        crop_width_ratio=crop_width_ratio,
     )
-    faces_tensor = stack_tensors(tensors, size=size)
-    flows_tensor = stack_tensors(optical_flows, size=size)
-    if faces_tensor.numel() == 0:
+
+    if not face_crops:
         print(f"No faces found for {video_path}; skipping save.")
         return None
 
-    save_tensor(faces_tensor, str(out_path_faces))
-    print(f"Saved {faces_tensor.shape} for {video_path} -> {out_path_faces}")
-    if flows_tensor.numel() == 0:
-        print(f"No optical flows found for {video_path}; skipping save.")
-        return None
-    save_tensor(flows_tensor, str(out_path_flows))
-    print(f"Saved {flows_tensor.shape} for {video_path} -> {out_path_flows}")
+    # 2. Save Original if needed
+    if purge or not orig_exists:
+        tensors_orig = convert_faces_to_tensors(face_crops, augmenter=None)
+        faces_tensor_orig = stack_tensors(tensors_orig, size=size)
+        save_tensor(faces_tensor_orig, str(out_path_orig))
+        print(f"Saved {faces_tensor_orig.shape} -> {out_path_orig}")
+
+    # 3. Save Augmented if needed
+    if augmenter and (purge or not aug_exists):
+        tensors_aug = convert_faces_to_tensors(face_crops, augmenter=augmenter)
+        faces_tensor_aug = stack_tensors(tensors_aug, size=size)
+        save_tensor(faces_tensor_aug, str(out_path_aug))
+        print(f"Saved {faces_tensor_aug.shape} (Augmented) -> {out_path_aug}")
+
     return str(out_path_base)
 
 
 def process_videos_in_parallel(
-    data_dir: Path,
-    label_file: Path,
-    out_dir: Path,
-    frame_skip: int = 30,
-    size: tuple = (224, 224),
-    margin: float = 0.0,
-    purge: bool = False,
+    config: PreprocessingConfig,
 ) -> list[str]:
     """
     Process all videos in parallel, each worker processes one video.
     Shows a progress bar that updates as each worker finishes.
     """
-    df = pd.read_csv(label_file)
-    out_dir = out_dir / f"frame_skip_{frame_skip}"
+    random.seed(2025)  # For reproducibility
+
+    df = pd.read_csv(config.label_file)
+
+    # Create augmenter if augmentation is enabled
+    augmenter = None
+    if config.augmentation.enabled:
+        augmenter = FrameAugmentation(config=config.augmentation)
+        print("Augmentation enabled - will create both original and augmented versions")
+
     jobs = []
     for _, row in df.iterrows():
         video_name = row.iloc[0]
-        video_path = os.path.join(data_dir, video_name)
+        video_path = os.path.join(config.data_dir, video_name)
         stem = Path(video_name).stem
-        out_path_base = Path(out_dir) / str(stem)
-        jobs.append((video_path, out_path_base, frame_skip, size, margin, purge))
+        out_path_base = Path(config.out_dir) / str(stem)
+
+        # Single job per video handles both original and augmented
+        jobs.append(
+            (
+                video_path,
+                out_path_base,
+                config.frame_skip,
+                config.size,
+                config.margin,
+                config.crop_width_ratio,
+                config.purge,
+                augmenter,
+            )
+        )
 
     # Use as many workers as CPU cores if possible, but not more than jobs
-    max_workers = min(os.cpu_count() or 4, len(jobs))
+    if config.max_workers is None:
+        max_workers = min(os.cpu_count() or 4, len(jobs))
+    else:
+        max_workers = min(config.max_workers, len(jobs))
+
     print(f"Processing {len(jobs)} videos with {max_workers} workers...")
     outputs: List[str] = []
     # Use ProcessPoolExecutor to distribute the jobs to all workers
@@ -321,53 +398,3 @@ def process_videos_in_parallel(
                 # Update the progress bar upon each completion
                 pbar.update(1)
     return outputs
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Process videos to extract face tensors."
-    )
-    parser.add_argument(
-        "--data_dir",
-        type=Path,
-        default=raw_videos_dir,
-        help="Path to the directory containing video files.",
-    )
-    parser.add_argument(
-        "--label_file",
-        type=Path,
-        default=label_file,
-        help="Path to the CSV file containing video labels.",
-    )
-    parser.add_argument(
-        "--out_dir",
-        type=Path,
-        default=data_dir / "faces",
-        help="Path to the directory where output tensors will be saved.",
-    )
-    parser.add_argument(
-        "--frame_skip", type=int, default=30, help="Save only every N-th frame."
-    )
-    parser.add_argument(
-        "--size", type=tuple, default=(224, 224), help="Target size for face tensors."
-    )
-    parser.add_argument(
-        "--margin", type=float, default=0.1, help="Margin to add around detected faces."
-    )
-    parser.add_argument(
-        "--purge",
-        action="store_true",
-        help="Purge existing output files before processing.",
-    )
-
-    args = parser.parse_args()
-
-    process_videos_in_parallel(
-        data_dir=args.data_dir,
-        label_file=args.label_file,
-        out_dir=args.out_dir,
-        frame_skip=args.frame_skip,
-        size=args.size,
-        margin=args.margin,
-        purge=args.purge,
-    )

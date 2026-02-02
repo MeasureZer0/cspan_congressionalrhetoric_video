@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Optional
 
 import pandas as pd
 import torch
@@ -8,15 +8,15 @@ from torch.utils.data import Dataset
 
 # Define transform types
 Transform = Optional[Callable[[Any], Any]]
-VideoTransform = Optional[
-    Callable[[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]
-]
 
 
 class FacesFramesDataset(Dataset):
     """
     PyTorch Dataset for loading preprocessed face tensors from .pt files
     and their corresponding labels from a CSV file.
+
+    Supports loading both original and augmented versions (with '_aug' suffix).
+    When augmented versions exist, they are treated as separate training samples.
     """
 
     def __init__(
@@ -25,7 +25,7 @@ class FacesFramesDataset(Dataset):
         img_dir: Path,
         transform: Transform = None,
         target_transform: Transform = None,
-        video_transform: VideoTransform = None,
+        include_augmented: bool = False,
     ) -> None:
         """
         Args:
@@ -33,8 +33,8 @@ class FacesFramesDataset(Dataset):
             img_dir (Path): Directory with preprocessed .pt face tensors.
             transform (callable, optional): Optional transform to apply to face tensors.
             target_transform (callable, optional): Optional transform applied to labels.
-            video_transform (callable, optional): Optional transform that takes both
-                faces and flows tensors and returns augmented versions.
+            include_augmented (bool): Whether to include augmented versions (_aug files)
+                as additional training samples. Default is False.
         """
         # Load CSV with labels
         self.csv_file = pd.read_csv(csv_file)
@@ -45,15 +45,49 @@ class FacesFramesDataset(Dataset):
         # Optional transformations for input and target
         self.transform = transform
         self.target_transform = target_transform
-        self.video_transform = video_transform
 
         # Mapping string labels to integer classes
         # Needed because models expect numeric labels
         self.classes = {"negative": 0, "neutral": 1, "positive": 2}
 
+        # Build index of available samples (original + augmented)
+        self.samples = self._build_sample_index(include_augmented)
+
+    def _build_sample_index(self, include_augmented: bool) -> list[tuple[str, str]]:
+        """
+        Build an index of all available samples.
+
+        Returns:
+            List of tuples (stem, label_str) for each available sample.
+            If include_augmented is True, includes both original and '_aug' versions.
+        """
+        samples = []
+
+        for idx in range(len(self.csv_file)):
+            video_name = str(self.csv_file.iloc[idx, 0])
+            label_str = str(self.csv_file.iloc[idx, 1]).strip()
+            stem = Path(video_name).stem
+
+            # Check if original files exist
+            face_path = os.path.join(self.img_dir, f"{stem}_faces.pt")
+            flow_path = os.path.join(self.img_dir, f"{stem}_flows.pt")
+
+            if os.path.exists(face_path) and os.path.exists(flow_path):
+                samples.append((stem, label_str))
+
+            # Check if augmented files exist
+            if include_augmented:
+                aug_face_path = os.path.join(self.img_dir, f"{stem}_aug_faces.pt")
+                aug_flow_path = os.path.join(self.img_dir, f"{stem}_aug_flows.pt")
+
+                if os.path.exists(aug_face_path) and os.path.exists(aug_flow_path):
+                    samples.append((f"{stem}_aug", label_str))
+
+        return samples
+
     def __len__(self) -> int:
-        # Return the total number of samples in the dataset
-        return len(self.csv_file)
+        # Return the total number of samples including augmented versions
+        return len(self.samples)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -63,12 +97,13 @@ class FacesFramesDataset(Dataset):
             idx (int): Index of the sample to fetch.
 
         Returns:
-            tuple[torch.Tensor, torch.Tensor]: faces tensor and label tensor
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor]: faces tensor, flows tensor,
+                and label tensor
         """
-        # Extract the stem (filename without extension) from CSV
-        stem = Path(str(self.csv_file.iloc[idx, 0])).stem
+        # Get stem and label from the sample index
+        stem, label_str = self.samples[idx]
 
-        # Construct the full path to the .pt file
+        # Construct the full path to the .pt files
         face_path = os.path.join(self.img_dir, f"{stem}_faces.pt")
         flow_path = os.path.join(self.img_dir, f"{stem}_flows.pt")
 
@@ -76,15 +111,8 @@ class FacesFramesDataset(Dataset):
         faces = torch.load(face_path)
         flows = torch.load(flow_path)
 
-        # Get the label string from CSV
-        label_str = str(self.csv_file.iloc[idx, 1]).strip()
-
         # Load and convert string label to tensor
         label = torch.tensor(self.classes[label_str], dtype=torch.long)
-
-        # Apply video-level augmentations first (affects both faces and flows)
-        if self.video_transform:
-            faces, flows = self.video_transform(faces, flows)
 
         # Apply optional transformations to faces tensor only
         if self.transform:

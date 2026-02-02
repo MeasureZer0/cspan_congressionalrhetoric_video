@@ -14,7 +14,12 @@ module load python/seminar r/seminar
 cd $SLURM_SUBMIT_DIR
 
 # -u to disable stdout buffering
-python3 -u preprocessing/crop_faces.py --purge >logs/crop_faces_${SLURM_JOBID}.log 2> logs/crop_faces_${SLURM_JOBID}.err
+python3 -u preprocessing/preprocess.py \
+    --purge \
+    --use-augmentation \
+    --frame_skip 30 \
+    >logs/preprocess_${SLURM_JOBID}.log \
+    2>logs/preprocess_${SLURM_JOBID}.err
 
 # Make sure you run sbatch from the root of the project!
 # sbatch commands:
