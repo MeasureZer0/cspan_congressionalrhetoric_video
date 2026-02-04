@@ -4,8 +4,9 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 VIDEO_PATH = "data/data2024/595065321.mp4"
-MODEL_PATH = "pose_landmarker_full.task"
+MODEL_PATH = "pose_landmarker_heavy.task"
 OUTPUT_PATH = "output_pose.mp4"
+FRAME_SKIP = 10
 
 # --- Visibility / presence filtering thresholds ---
 P_THRESH = 0.6  # presence: landmark exists / is in-frame
@@ -59,6 +60,10 @@ def main():
             ok, frame_bgr = cap.read()
             if not ok:
                 break
+
+            if frame_idx % FRAME_SKIP != 0:
+                frame_idx += 1
+                continue
 
             # OpenCV -> RGB for MediaPipe
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
