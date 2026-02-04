@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import cv2  # OpenCV for video processing
+import mediapipe as mp
 import numpy as np  # NumPy for storing frames as arrays
 import pandas as pd  # Pandas for reading CSV labels
 import torch
@@ -20,6 +21,91 @@ face_config = None
 
 # Process-local face detector (initialized lazily in each worker)
 _face_detector = None
+
+
+def tensor_to_uint8_rgb(x: torch.Tensor) -> np.ndarray:
+    """
+    x: [T,C,H,W] or [T,H,W,C]
+    returns: uint8 RGB numpy [T,H,W,3]
+    """
+    x = x.detach().cpu()
+
+    if x.ndim != 4:
+        raise ValueError(f"Expected 4D tensor, got {tuple(x.shape)}")
+
+    # Make [T,H,W,C]
+    if x.shape[1] in (1, 3):  # [T,C,H,W]
+        x = x.permute(0, 2, 3, 1)
+    elif x.shape[-1] in (1, 3):  # [T,H,W,C]
+        pass
+    else:
+        raise ValueError("Can't infer channel dimension (expected 1 or 3).")
+
+    # If grayscale, replicate to 3 channels
+    if x.shape[-1] == 1:
+        x = x.repeat(1, 1, 1, 3)
+
+    x = x.float()
+
+    # Normalize to 0..255
+    mn, mx = float(x.min()), float(x.max())
+    if mn >= -0.01 and mx <= 1.01:  # 0..1
+        x = x * 255.0
+    elif mn >= -1.01 and mx <= 1.01:  # -1..1
+        x = (x + 1.0) * 127.5
+    # else assume already 0..255-ish
+
+    x = x.clamp(0, 255).round().to(torch.uint8).numpy()
+    return x  # RGB uint8
+
+
+def facemesh_landmarks(
+    frames_rgb_u8: np.ndarray,
+    static_image_mode: bool = True,
+    refine_landmarks: bool = False,
+    max_num_faces: int = 1,
+    min_detection_conf: float = 0.5,
+    min_tracking_conf: float = 0.5,
+):
+    """
+    frames_rgb_u8: [T,H,W,3] uint8 RGB
+    returns:
+      lm_px: [T,468,3] float32 (x,y in pixels, z in "relative" units), NaN if no face
+      lm_norm: [T,468,3] float32 (x,y in 0..1), NaN if no face
+    """
+    T, H, W, _ = frames_rgb_u8.shape
+    lm_px = np.full((T, 468, 3), np.nan, dtype=np.float32)
+    lm_norm = np.full((T, 468, 3), np.nan, dtype=np.float32)
+
+    mp_face_mesh = mp.solutions.face_mesh
+
+    with mp_face_mesh.FaceMesh(
+        static_image_mode=static_image_mode,
+        refine_landmarks=refine_landmarks,  # True adds iris landmarks + refinement
+        max_num_faces=max_num_faces,
+        min_detection_confidence=min_detection_conf,
+        min_tracking_confidence=min_tracking_conf,
+    ) as face_mesh:
+        for t in range(T):
+            # MediaPipe expects RGB
+            result = face_mesh.process(frames_rgb_u8[t])
+
+            if not result.multi_face_landmarks:
+                continue
+
+            # take first face (since cropped)
+            face = result.multi_face_landmarks[0].landmark
+            arr = np.array(
+                [[p.x, p.y, p.z] for p in face], dtype=np.float32
+            )  # normalized
+            lm_norm[t] = arr
+            lm_px[t, :, 0] = arr[:, 0] * W
+            lm_px[t, :, 1] = arr[:, 1] * H
+            lm_px[t, :, 2] = arr[
+                :, 2
+            ]  # z is NOT in pixels; it's relative to face scale
+
+    return lm_px, lm_norm
 
 
 def _get_face_detector() -> cv2.FaceDetectorYN:
@@ -293,12 +379,14 @@ def process_single_video(
     Returns base output path if successful, None otherwise.
     """
     out_path_orig = Path(f"{out_path_base}_faces.pt")
+    out_path_orig_lm = Path(f"{out_path_base}_landmarks.pt")
     out_path_aug = Path(f"{out_path_base}_aug_faces.pt") if augmenter else None
+    out_path_aug_lm = Path(f"{out_path_base}_aug_landmarks.pt") if augmenter else None
 
     # Check existence
-    orig_exists = out_path_orig.exists()
+    orig_exists = out_path_orig.exists() and out_path_orig_lm.exists()
     aug_exists = (
-        out_path_aug.exists() if out_path_aug else True
+        (out_path_aug.exists() and out_path_aug_lm.exists()) if out_path_aug else True
     )  # If no aug needed, "exists" is True
 
     if not purge and orig_exists and aug_exists:
@@ -329,12 +417,28 @@ def process_single_video(
         save_tensor(faces_tensor_orig, str(out_path_orig))
         print(f"Saved {faces_tensor_orig.shape} -> {out_path_orig}")
 
+        # Extract landmarks for original
+        frames_uint8 = tensor_to_uint8_rgb(faces_tensor_orig)
+        lm_px, _ = facemesh_landmarks(frames_uint8, static_image_mode=False)
+        lm_px_tensor = torch.from_numpy(lm_px)
+        save_tensor(lm_px_tensor, str(out_path_orig_lm))
+        print(f"Saved {lm_px_tensor.shape} (Landmarks) -> {out_path_orig_lm}")
+
     # 3. Save Augmented if needed
     if augmenter and (purge or not aug_exists):
         tensors_aug = convert_faces_to_tensors(face_crops, augmenter=augmenter)
         faces_tensor_aug = stack_tensors(tensors_aug, size=size)
         save_tensor(faces_tensor_aug, str(out_path_aug))
         print(f"Saved {faces_tensor_aug.shape} (Augmented) -> {out_path_aug}")
+
+        # Extract landmarks for augmented
+        frames_uint8_aug = tensor_to_uint8_rgb(faces_tensor_aug)
+        lm_px_aug, _ = facemesh_landmarks(frames_uint8_aug, static_image_mode=False)
+        lm_px_aug_tensor = torch.from_numpy(lm_px_aug)
+        save_tensor(lm_px_aug_tensor, str(out_path_aug_lm))
+        print(
+            f"Saved {lm_px_aug_tensor.shape} (Augmented Landmarks) -> {out_path_aug_lm}"
+        )
 
     return str(out_path_base)
 
