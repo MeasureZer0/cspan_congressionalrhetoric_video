@@ -50,13 +50,19 @@ def ssl_collate_fn(batch):
     v1_list = [item[0] for item in batch]
     v2_list = [item[1] for item in batch]
     lengths = torch.tensor([v.shape[0] for v in v1_list], dtype=torch.long)
-    return v1_list, v2_list, lengths
+
+    v1_padded = pad_sequence(v1_list, batch_first=True)
+    v2_padded = pad_sequence(v2_list, batch_first=True)
+
+    return v1_padded, v2_padded, lengths
 
 def supervised_collate_fn(batch):
-    faces = [item[0] for item in batch]
+    faces_list = [item[0] for item in batch]
     labels = torch.stack([item[1] for item in batch])
-    lengths = torch.tensor([f.shape[0] for f in faces], dtype=torch.long)
-    return faces, labels, lengths
+    lengths = torch.tensor([f.shape[0] for f in faces_list], dtype=torch.long)
+
+    faces_padded = pad_sequence(faces_list, batch_first=True)
+    return faces_padded, labels, lengths
 
 # ==========================================
 # Models
@@ -81,7 +87,73 @@ def build_resnet_cnn(input_channels: int) -> tuple[nn.Module, int]:
 
     feature_size = model.fc.in_features
     model.fc = nn.Identity()
+
+    for name, param in model.named_parameters():
+        if "layer4" in name or "fc" in name:
+            param.requires_grad = True
+        else:
+            param.requires_grad = False
+
     return model, feature_size
+
+class TinyMLPEncoder(nn.Module):
+    """
+    Baseline: Tiny CNN + frame averaging + MLP
+    """
+
+    def __init__(self, hidden_size=64, num_classes=3):
+        super().__init__()
+        # Tiny CNN
+        self.image_extractor = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=7, stride=4, padding=3),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.AdaptiveAvgPool2d((1, 1))
+        )
+        self.feature_dim = 128
+        
+        # MLP
+        self.mlp = nn.Sequential(
+            nn.Linear(self.feature_dim, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+        )
+        
+        self.num_classes = num_classes
+        self.classifier = nn.Linear(hidden_size, num_classes)
+        
+        self.output_dim = hidden_size
+
+    def forward(self, batch_video_list: List[torch.Tensor], lengths: torch.Tensor):
+        device = _get_device()
+
+        padded = pad_sequence(batch_video_list, batch_first=True)
+
+        B, T, C, H, W = padded.shape
+        flat = padded.view(B*T, C, H, W).to(device)
+        feats = self.image_extractor(flat).view(B, T, -1)
+        avg_feats = feats.mean(dim=1)
+
+        hidden = self.mlp(avg_feats)
+        logits = self.classifier(hidden)
+        return logits
+
+    def forward_hidden(self, batch_video_list: List[torch.Tensor], lengths: torch.Tensor):
+        """Forward for SSL: returns hidden representation without classifier."""
+        device = _get_device()
+
+        padded = pad_sequence(batch_video_list, batch_first=True)
+
+        B, T, C, H, W = padded.shape
+        flat = padded.view(B*T, C, H, W).to(device)
+        feats = self.image_extractor(flat).view(B, T, -1)
+        avg_feats = feats.mean(dim=1)
+
+        hidden = self.mlp(avg_feats)
+        return hidden
 
 
 class FeatureAggregatingLSTM(nn.Module):
@@ -101,47 +173,54 @@ class FeatureAggregatingLSTM(nn.Module):
         self.num_classes = num_classes
         self.classifier = nn.Linear(hidden_size, num_classes)
 
-    def forward(self, batch_video_list: List[torch.Tensor], lengths: torch.Tensor):
+    def forward(self, batch_padded: List[torch.Tensor], lengths: torch.Tensor):
         """
         Standard forward for supervised training: returns logits.
         """
         device = _get_device()
-        features = [self.image_extractor(seq.to(device)) for seq in batch_video_list]
-        padded = pad_sequence(features, batch_first=True)
+        B, T, C, H, W = batch_padded.shape
+
+        batch_flat = batch_padded.view(B * T, C, H, W).to(device)
+        features_flat = self.image_extractor(batch_flat)
+        features_flat = features_flat.view(B, T, -1)
+
         packed = pack_padded_sequence(
-            padded, lengths.cpu(), batch_first=True, enforce_sorted=False
+            features_flat, lengths.cpu(), batch_first=True, enforce_sorted=False
         )
+
         _, (hn, _) = self.lstm(packed)
         last_hidden = hn[-1]
         logits = self.classifier(last_hidden)
         return logits
 
-    def forward_hidden(self, batch_video_list: List[torch.Tensor], lengths: torch.Tensor):
+    def forward_hidden(self, batch_padded: List[torch.Tensor], lengths: torch.Tensor):
         """
         Forward for SSL: returns LSTM hidden state without classifier.
         """
         device = _get_device()
-        features = [self.image_extractor(seq.to(device)) for seq in batch_video_list]
-        padded = pad_sequence(features, batch_first=True)
+        B, T, C, H, W = batch_padded.shape
+
+        batch_flat = batch_padded.view(B * T, C, H, W).to(device)
+        features_flat = self.image_extractor(batch_flat)
+        features_flat = features_flat.view(B, T, -1)
+
         packed = pack_padded_sequence(
-            padded, lengths.cpu(), batch_first=True, enforce_sorted=False
+            features_flat, lengths.cpu(), batch_first=True, enforce_sorted=False
         )
         _, (hn, _) = self.lstm(packed)
         last_hidden = hn[-1]
         return last_hidden
-
-
+        
 class SimCLRProjectionWrapper(nn.Module):
-    """Wrap LSTM encoder with a projection head for SimCLR."""
-
-    def __init__(self, encoder: FeatureAggregatingLSTM, projection_dim=256):
+    """Wrap any encoder with a projection head for SimCLR."""
+    def __init__(self, encoder: nn.Module, encoder_output_dim: int, projection_dim=256):
         super().__init__()
         self.encoder = encoder
-        lstm_out_dim = encoder.lstm.hidden_size
+        
         self.projector = nn.Sequential(
-            nn.Linear(lstm_out_dim, lstm_out_dim),
+            nn.Linear(encoder_output_dim, encoder_output_dim),
             nn.ReLU(),
-            nn.Linear(lstm_out_dim, projection_dim),
+            nn.Linear(encoder_output_dim, projection_dim),
         )
 
     def forward(self, x, lengths):
@@ -206,6 +285,7 @@ class NTXentLoss(nn.Module):
         self.temperature = temperature
     
     def forward(self, z1, z2):
+        batch_size = z1.size(0)
         z1 = F.normalize(z1, dim=1)
         z2 = F.normalize(z2, dim=1)
         
@@ -214,26 +294,37 @@ class NTXentLoss(nn.Module):
         
         # [2*B, 2*B]
         sim_matrix = torch.mm(z, z.T) / self.temperature
+
+        mask = torch.eye(2 * batch_size, device=z.device, dtype=torch.bool)
+        sim_matrix = sim_matrix.masked_fill(mask, -9e15)
         
-        batch_size = z1.size(0)
         labels = torch.arange(batch_size, device=z1.device)
         labels = torch.cat([labels + batch_size, labels])
         
         return F.cross_entropy(sim_matrix, labels)
 
 def train_ssl(args, device, img_dir, weights_dir):
-    print("--- STARTING SSL PRETRAINING (SimCLR) ---")
+    print(f"--- STARTING SSL PRETRAINING (SimCLR) with {args.encoder} ---")
     base_ds = FacesFramesSSLDataset(img_dir)
     transform = VideoSimCLRTransform(size=224)
     ssl_ds = SimCLRDataset(base_ds, transform)
     loader = DataLoader(ssl_ds, batch_size=args.batch_size, shuffle=True, collate_fn=ssl_collate_fn)
-    encoder = FeatureAggregatingLSTM().to(device)
-    model = SimCLRProjectionWrapper(encoder).to(device)
+    
+    # Choose encoder
+    if args.encoder == 'baseline':
+        encoder = TinyMLPEncoder(hidden_size=64).to(device)
+    elif args.encoder == 'resnet_lstm':
+        encoder = FeatureAggregatingLSTM(hidden_size=64).to(device)
+    
+    model = SimCLRProjectionWrapper(encoder, encoder_output_dim=64).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     nt_xent_loss = NTXentLoss()
-    total_loss = 0
+    
     for epoch in range(args.epochs):
         model.train()
+        epoch_loss = 0.0
+        num_batches = 0
+        
         pbar = tqdm(loader, desc=f"SSL Epoch {epoch+1}", leave=True)
         for v1, v2, lengths in pbar:
             optimizer.zero_grad()
@@ -244,17 +335,24 @@ def train_ssl(args, device, img_dir, weights_dir):
             loss = nt_xent_loss(z1, z2)
             loss.backward()
             optimizer.step()
-            total_loss += loss.item()
+            
+            # Accumulate loss
+            epoch_loss += loss.item()
+            num_batches += 1
+            
             pbar.set_postfix(loss=loss.item())
+        
+        avg_loss = epoch_loss / num_batches
+        print(f"Epoch {epoch+1}/{args.epochs} - Avg Loss: {avg_loss:.4f}")
     
-    save_path = weights_dir / "ssl_backbone.pt"
+    save_path = weights_dir / f"ssl_backbone_{args.encoder}.pt"
     torch.save(encoder.state_dict(), save_path)
     print(f"SSL Backbone saved to {save_path}")
 
 def train_supervised(args, device, img_dir, csv_file, weights_dir):
-    print("--- STARTING SUPERVISED TRAINING ---")
+    print(f"--- STARTING SUPERVISED TRAINING with {args.encoder} ---")
     full_ds = FacesFramesSupervisedDataset(csv_file, img_dir)
-    train_idx, val_idx, test_idx = stratified_split(full_ds)
+    train_idx, val_idx, test_idx = stratified_split(full_ds, (0.8, 0.1, 0.1))
 
     train_ds = torch.utils.data.Subset(full_ds, train_idx)
     val_ds = torch.utils.data.Subset(full_ds, val_idx)
@@ -264,12 +362,19 @@ def train_supervised(args, device, img_dir, csv_file, weights_dir):
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, collate_fn=supervised_collate_fn)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, collate_fn=supervised_collate_fn)
 
-    model = FeatureAggregatingLSTM().to(device)
+    # Choose encoder
+    if args.encoder == 'baseline':
+        model = TinyMLPEncoder(hidden_size=64).to(device)
+    elif args.encoder == 'resnet_lstm':
+        model = FeatureAggregatingLSTM(hidden_size=64).to(device)
+    
     if args.load_ssl:
-        ssl_path = weights_dir / "ssl_backbone.pt"
+        ssl_path = weights_dir / f"ssl_backbone_{args.encoder}.pt"
         if ssl_path.exists():
             model.load_state_dict(torch.load(ssl_path, map_location=device))
-            print("Loaded SSL weights!")
+            print(f"Loaded SSL weights from {ssl_path}!")
+        else:
+            print(f"Warning: SSL weights not found at {ssl_path}")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
     criterion = nn.CrossEntropyLoss()
@@ -311,7 +416,7 @@ def sequence_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
     Computes cross-entropy loss while ignoring padded positions.
 
     Args:
-        logits: tensor [B, um_classes]
+        logits: tensor [B, num_classes]
         targets: tensor [B] with true class indices
 
     Returns:
@@ -336,45 +441,11 @@ def sequence_accuracy(logits: torch.Tensor, targets: torch.Tensor) -> tuple[int,
         total = int(targets.shape[0])
         return correct, total
 
-
-def evaluate(
-    model: nn.Module, dataloader: DataLoader, device: torch.device, desc: str = "Eval"
-) -> tuple[float, float]:
-    """
-    Evaluates the model on the provided dataset.
-
-    Args:
-        model: trained model
-        dataloader: DataLoader to evaluate on
-        device: computation device
-        desc: progress bar description string
-
-    Returns:
-        avg_loss: average masked loss
-        avg_acc: average masked accuracy
-    """
-    model.eval()
-    total_loss = 0.0
-    total_correct = 0
-    total_samples = 0
-    with torch.no_grad():
-        for batch_image, batch_flow, labels, lengths in tqdm(dataloader, desc=desc):
-            labels = labels.to(device)
-            logits = model(batch_image, batch_flow, lengths)
-            loss = sequence_loss(logits, labels)
-            batch_correct, batch_total = sequence_accuracy(logits, labels)
-            total_loss += loss.item() * batch_total
-            total_correct += batch_correct
-            total_samples += batch_total
-
-    avg_loss = total_loss / total_samples
-    avg_acc = total_correct / total_samples
-    return avg_loss, avg_acc
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", type=str, choices=["ssl", "supervised"], required=True)
+    parser.add_argument("--encoder", type=str, choices=["baseline", "resnet_lstm"], default="resnet_lstm",
+                        help="Encoder architecture: tiny_mlp (simplest), resnet_lstm (ResNet+LSTM)")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--load-ssl", action="store_true")
