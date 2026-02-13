@@ -54,7 +54,11 @@ class FacesFramesSSLDataset(Dataset):
 
         face_path = self.img_dir / f"{stem}_faces.pt"
 
-        faces = torch.load(face_path)
+        try:
+            faces = torch.load(face_path)
+        except Exception as e:
+            print(f"Corrupted file: {face_path}")
+            return self.__getitem__((idx + 1) % len(self))
 
         return faces
 
