@@ -419,7 +419,7 @@ def train_ssl(args, device, img_dir, weights_dir):
         base_ds = Subset(base_ds, indicies)
         print(f"Using subset of {args.subset} samples for SSL training")
 
-    transform = VideoSimCLRTransform(size=224)
+    transform = VideoSimCLRTransform(size=128)
     ssl_ds = SimCLRDataset(base_ds, transform)
 
     loader = DataLoader(
