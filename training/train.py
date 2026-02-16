@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import numpy as np
 import pandas as pd
 from torch import nn
-from torch.nn.utils.rnn import pack_padded_sequence, pad_sequence
+from torch.nn.utils.rnn import pack_padded_sequence, pad_sequence, pad_packed_sequence
 from torch.utils.data import DataLoader, Subset
 from torchvision.models import ResNet18_Weights, resnet18
 from faces_frames_dataset import FacesFramesSSLDataset, FacesFramesSupervisedDataset, SimCLRDataset
@@ -23,6 +23,12 @@ from torch.amp import autocast, GradScaler
 # Utility
 # ==========================================
 
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
 
 # Check for GPU availability and configure device
 def _get_device() -> torch.device:
@@ -94,6 +100,27 @@ class EarlyStopping:
 # Models
 # ==========================================
 
+class TemporalAttention(nn.Module):
+    def __init__(self, hidden_dim):
+        super().__init__()
+        self.attn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, 1)
+        )
+
+    def forward(self, lstm_outputs, lengths):
+        scores = self.attn(lstm_outputs).squeeze(-1)  # [B, T]
+
+        max_len = scores.size(1)
+        mask = torch.arange(max_len, device=lengths.device)[None, :] < lengths[:, None]
+        scores[~mask] = -1e9
+
+        weights = torch.softmax(scores, dim=1)
+
+        context = torch.sum(lstm_outputs * weights.unsqueeze(-1), dim=1)
+        return context
+
 class EfficientCNN(nn.Module):
     
     def __init__(self, hidden_size=128):
@@ -117,7 +144,7 @@ class EfficientCNN(nn.Module):
             
             nn.AdaptiveAvgPool2d(1)
         )
-        self.feature_dim = 128
+        self.feature_dim = hidden_size
         
     def forward(self, x):
         return self.features(x).squeeze(-1).squeeze(-1)
@@ -181,10 +208,10 @@ class TinyMLPEncoder(nn.Module):
         
         self.output_dim = hidden_size
 
-    def forward(self, batch_video_list: List[torch.Tensor], lengths: torch.Tensor):
-        device = _get_device()
+    def forward(self, batch_padded: torch.Tensor, lengths: torch.Tensor):
+        device = batch_padded.device
 
-        padded = pad_sequence(batch_video_list, batch_first=True)
+        padded = pad_sequence(batch_padded, batch_first=True)
 
         B, T, C, H, W = padded.shape
         flat = padded.view(B*T, C, H, W).to(device)
@@ -195,11 +222,11 @@ class TinyMLPEncoder(nn.Module):
         logits = self.classifier(hidden)
         return logits
 
-    def forward_hidden(self, batch_video_list: List[torch.Tensor], lengths: torch.Tensor):
+    def forward_hidden(self, batch_padded: torch.Tensor, lengths: torch.Tensor):
         """Forward for SSL: returns hidden representation without classifier."""
-        device = _get_device()
+        device = batch_padded.device
 
-        padded = pad_sequence(batch_video_list, batch_first=True)
+        padded = pad_sequence(batch_padded, batch_first=True)
 
         B, T, C, H, W = padded.shape
         flat = padded.view(B*T, C, H, W).to(device)
@@ -209,9 +236,9 @@ class TinyMLPEncoder(nn.Module):
         hidden = self.mlp(avg_feats)
         return hidden
 
-class FastLSTM(nn.Module):
+class FastGRU(nn.Module):
     
-    def __init__(self, hidden_size=128, num_layers=1, num_classes=3, use_efficient_cnn=True):
+    def __init__(self, hidden_size=128, num_layers=2, num_classes=3, use_efficient_cnn=True):
         super().__init__()
         
         if use_efficient_cnn:
@@ -220,18 +247,20 @@ class FastLSTM(nn.Module):
         else:
             self.image_extractor, self.feature_dim = build_resnet_cnn(3)
         
-        self.lstm = nn.LSTM(
+        self.gru = nn.GRU(
             input_size=self.feature_dim,
             hidden_size=hidden_size,
             num_layers=num_layers,
+            dropout=0.2 if num_layers > 1 else 0,
             batch_first=True,
         )
+        self.attention = TemporalAttention(hidden_size)
         self.num_classes = num_classes
         self.classifier = nn.Linear(hidden_size, num_classes)
         self.output_dim = hidden_size
 
     def forward(self, batch_padded: torch.Tensor, lengths: torch.Tensor):
-        device = _get_device()
+        device = batch_padded.device
         B, T, C, H, W = batch_padded.shape
 
         batch_flat = batch_padded.view(B * T, C, H, W).to(device)
@@ -242,25 +271,29 @@ class FastLSTM(nn.Module):
             features_flat, lengths.cpu(), batch_first=True, enforce_sorted=False
         )
 
-        _, (hn, _) = self.lstm(packed)
-        last_hidden = hn[-1]
-        logits = self.classifier(last_hidden)
+        packed_out, _ = self.gru(packed)
+        outputs, _ = pad_packed_sequence(packed_out, batch_first=True)
+        context = self.attention(outputs, lengths)
+        logits = self.classifier(context)
         return logits
 
     def forward_hidden(self, batch_padded: torch.Tensor, lengths: torch.Tensor):
-        device = _get_device()
+        device = batch_padded.device
         B, T, C, H, W = batch_padded.shape
 
         batch_flat = batch_padded.view(B * T, C, H, W).to(device)
         features_flat = self.image_extractor(batch_flat)
-        features_flat = features_flat.view(B, T, -1)
+        features = features_flat.view(B, T, -1)
 
         packed = pack_padded_sequence(
-            features_flat, lengths.cpu(), batch_first=True, enforce_sorted=False
+            features, lengths.cpu(), batch_first=True, enforce_sorted=False
         )
-        _, (hn, _) = self.lstm(packed)
-        last_hidden = hn[-1]
-        return last_hidden
+        packed_out, _ = self.gru(packed)
+
+        outputs, _ = pad_packed_sequence(packed_out, batch_first=True)
+
+        context = self.attention(outputs, lengths)
+        return context
 
 
 class FeatureAggregatingLSTM(nn.Module):
@@ -284,7 +317,7 @@ class FeatureAggregatingLSTM(nn.Module):
         """
         Standard forward for supervised training: returns logits.
         """
-        device = _get_device()
+        device = batch_padded.device
         B, T, C, H, W = batch_padded.shape
 
         batch_flat = batch_padded.view(B * T, C, H, W).to(device)
@@ -304,7 +337,7 @@ class FeatureAggregatingLSTM(nn.Module):
         """
         Forward for SSL: returns LSTM hidden state without classifier.
         """
-        device = _get_device()
+        device = batch_padded.device
         B, T, C, H, W = batch_padded.shape
 
         batch_flat = batch_padded.view(B * T, C, H, W).to(device)
@@ -434,8 +467,8 @@ def train_ssl(args, device, img_dir, weights_dir):
     if args.encoder == 'baseline':
         encoder = TinyMLPEncoder(hidden_size=64).to(device)
         encoder_dim = 64
-    elif args.encoder == 'fast_lstm':
-        encoder = FastLSTM(hidden_size=128, use_efficient_cnn=True).to(device)
+    elif args.encoder == 'fast_gru':
+        encoder = FastGRU(hidden_size=128, use_efficient_cnn=True).to(device)
         encoder_dim = 128    
     elif args.encoder == 'resnet_lstm':
         encoder = FeatureAggregatingLSTM(hidden_size=64).to(device)
@@ -450,23 +483,30 @@ def train_ssl(args, device, img_dir, weights_dir):
     scaler = GradScaler()
 
     accumulation_steps = args.accumulation_steps
-    print(f"Effective batch size: {args.batch_size * accumulation_steps}")
 
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=args.epochs, eta_min=1e-6
+    )
+
+    print(f"Effective batch size: {args.batch_size * accumulation_steps}")
+    print(f"Initial LR: {1e-3}")
     for epoch in range(args.epochs):
         model.train()
         epoch_loss = 0.0
         num_batches = 0
-        
         pbar = tqdm(loader, desc=f"SSL Epoch {epoch+1}", leave=True)
         optimizer.zero_grad()
-
+        
         for i, (v1, v2, lengths) in enumerate(pbar):
+            v1 = v1.to(device)
+            v2 = v2.to(device)
             with autocast(device_type="cuda"):
                 z1 = model(v1, lengths)
                 z2 = model(v2, lengths)
                 loss = nt_xent_loss(z1, z2) / accumulation_steps
+            
             scaler.scale(loss).backward()
-
+            
             if (i + 1) % accumulation_steps == 0:
                 scaler.step(optimizer)
                 scaler.update()
@@ -476,8 +516,16 @@ def train_ssl(args, device, img_dir, weights_dir):
             num_batches += 1
             pbar.set_postfix(loss=loss.item() * accumulation_steps)
         
+        if (len(loader) % accumulation_steps) != 0:
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
+        
         avg_loss = epoch_loss / num_batches
-        print(f"Epoch {epoch+1}/{args.epochs} - Avg Loss: {avg_loss:.4f}")
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"Epoch {epoch+1}/{args.epochs} - Avg Loss: {avg_loss:.4f}, LR: {current_lr:.6f}")
+        
+        scheduler.step()
     
     save_path = weights_dir / f"ssl_backbone_{args.encoder}.pt"
     torch.save(encoder.state_dict(), save_path)
@@ -516,8 +564,8 @@ def train_supervised(args, device, img_dir, csv_file, weights_dir, logs_dir):
     # Choose encoder
     if args.encoder == 'baseline':
         model = TinyMLPEncoder(hidden_size=64).to(device)
-    elif args.encoder == 'fast_lstm':
-        model = FastLSTM(hidden_size=128, use_efficient_cnn=True).to(device)
+    elif args.encoder == 'fast_gru':
+        model = FastGRU(hidden_size=128, use_efficient_cnn=True).to(device)
     elif args.encoder == 'resnet_lstm':
         model = FeatureAggregatingLSTM(hidden_size=64).to(device)
     else:
@@ -539,6 +587,10 @@ def train_supervised(args, device, img_dir, csv_file, weights_dir, logs_dir):
     
     # Gradient Accumulation
     accumulation_steps = args.accumulation_steps
+
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=args.epochs, eta_min=1e-6
+    )
     
     # Early Stopping
     early_stopping = EarlyStopping(patience=5, min_delta=0.001)
@@ -569,6 +621,7 @@ def train_supervised(args, device, img_dir, csv_file, weights_dir, logs_dir):
             pbar = tqdm(train_loader, desc=f"Supervised Epoch {epoch+1}")
             for i, (faces, labels, lengths) in enumerate(pbar):
                 labels = labels.to(device)
+                faces = faces.to(device)
                 
                 with autocast(device_type="cuda"):
                     logits = model(faces, lengths)
@@ -580,22 +633,25 @@ def train_supervised(args, device, img_dir, csv_file, weights_dir, logs_dir):
                     scaler.step(optimizer)
                     scaler.update()
                     optimizer.zero_grad()
-
+                
                 train_loss += loss.item() * accumulation_steps
                 preds = logits.argmax(dim=1)
                 correct += (preds == labels).sum().item()
                 total += labels.size(0)
-                
                 pbar.set_postfix(loss=loss.item() * accumulation_steps, 
-                               acc=correct/total if total > 0 else 0)
+                                acc=correct/total if total > 0 else 0)
+            
+            if (len(train_loader) % accumulation_steps) != 0:
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
             
             train_acc = correct / total
             avg_train_loss = train_loss / len(train_loader)
-
+            
             # ==================== VALIDATION ====================
             model.eval()
             val_loss = 0.0
-            
             all_preds = []
             all_labels = []
             
@@ -603,47 +659,47 @@ def train_supervised(args, device, img_dir, csv_file, weights_dir, logs_dir):
                 for faces, labels, lengths in val_loader:
                     labels = labels.to(device)
                     
-                    with autocast():
+                    with autocast(device_type="cuda"):
                         logits = model(faces, lengths)
                         loss = criterion(logits, labels)
                     
                     val_loss += loss.item()
                     preds = logits.argmax(dim=1)
-                    
                     all_preds.extend(preds.cpu().numpy())
                     all_labels.extend(labels.cpu().numpy())
             
-            # Calculate metrics
             avg_val_loss = val_loss / len(val_loader)
             val_acc = np.mean(np.array(all_preds) == np.array(all_labels))
             val_f1 = f1_score(all_labels, all_preds, average='macro')
             val_cm = confusion_matrix(all_labels, all_preds)
-            
             val_cm_str = ";".join([",".join(map(str, row)) for row in val_cm])
-
-            print(f"Epoch {epoch+1}/{args.epochs}")
-            print(f"  Train Loss: {avg_train_loss:.4f}, Train Acc: {train_acc:.4f}")
-            print(f"  Val Loss: {avg_val_loss:.4f}, Val Acc: {val_acc:.4f}, Val F1: {val_f1:.4f}")
             
-            # Write to CSV
+            current_lr = optimizer.param_groups[0]['lr']
+            
+            print(f"Epoch {epoch+1}/{args.epochs}")
+            print(f" Train Loss: {avg_train_loss:.4f}, Train Acc: {train_acc:.4f}")
+            print(f" Val Loss: {avg_val_loss:.4f}, Val Acc: {val_acc:.4f}, Val F1: {val_f1:.4f}")
+            print(f" LR: {current_lr:.6f}")
+            
             writer.writerow([
-                epoch+1, 
+                epoch+1,
                 f"{avg_train_loss:.6f}",
-                f"{avg_val_loss:.6f}", 
+                f"{avg_val_loss:.6f}",
                 f"{train_acc:.6f}",
                 f"{val_acc:.6f}",
                 f"{val_f1:.6f}",
-                val_cm_str
+                val_cm_str,
+                f"{current_lr:.8f}"
             ])
-            csv_file_handle.flush()  # Ensure data is written immediately
+            csv_file_handle.flush()
             
-            # Save best model
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
                 torch.save(model.state_dict(), best_model_path)
-                print(f"  ✓ Saved best model (val_acc: {val_acc:.4f})")
+                print(f"Saved best model (val_acc: {val_acc:.4f})")
             
-            # Early Stopping check
+            scheduler.step()
+            
             if early_stopping(avg_val_loss):
                 print("Early stopping triggered!")
                 break
@@ -687,14 +743,15 @@ def train_supervised(args, device, img_dir, csv_file, weights_dir, logs_dir):
     print(f"Test results saved to {test_results_path}")
 
 if __name__ == "__main__":
+    set_seed(37)
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", type=str, choices=["ssl", "supervised"], required=True)
     parser.add_argument(
         "--encoder", 
         type=str, 
-        choices=["baseline", "fast_lstm", "resnet_lstm"], 
-        default="fast_lstm",
-        help="Encoder: baseline, fast_lstm, resnet_lstm"
+        choices=["baseline", "fast_gru", "resnet_lstm"], 
+        default="fast_gru",
+        help="Encoder: baseline, fast_gru, resnet_lstm"
     )
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=4, help="Base batch size")
@@ -714,7 +771,6 @@ if __name__ == "__main__":
 
     img_dir, csv_file, weights_dir, logs_dir = _default_paths(args.frame_skip)
     weights_dir.mkdir(parents=True, exist_ok=True)
-
     if args.mode == "ssl":
         train_ssl(args, device, img_dir, weights_dir)
     else:
