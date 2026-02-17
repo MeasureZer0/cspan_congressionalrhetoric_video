@@ -15,13 +15,15 @@ class FacesFramesSSLDataset(Dataset):
 
     Used as a base dataset for SSL methods.
     """
-    def __init__(self, img_dir: Path):
+    def __init__(self, img_dir: Path, min_frames: int = 8, max_frames: int = 120):
         """
         Args:
             img_dir (Path): Directory containing *_faces.pt and *_flows.pt files.
         """
         self.img_dir = Path(img_dir)
         self.samples = self._build_sample()
+        self.min_frames = min_frames
+        self.max_frames = max_frames
 
     def _build_sample(self):
         """
@@ -41,24 +43,24 @@ class FacesFramesSSLDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        """
-        Load a single sample (faces tensor).
-
-        Args:
-            idx (int): Sample index.
-
-        Returns:
-            tuple[Tensor, Tensor]: faces tensor.
-        """
         stem = self.samples[idx]
-
         face_path = self.img_dir / f"{stem}_faces.pt"
 
         try:
-            faces = torch.load(face_path)
+            faces = torch.load(face_path)  # [frames, C, H, W]
         except Exception as e:
             print(f"Corrupted file: {face_path}")
             return self.__getitem__((idx + 1) % len(self))
+
+        n_frames = faces.shape[0]
+
+        if n_frames > self.max_frames:
+            faces = faces[:self.max_frames]
+
+        elif n_frames < self.min_frames:
+            repeat_factor = int(np.ceil(self.min_frames / n_frames))
+            faces = faces.repeat(repeat_factor, 1, 1, 1)
+            faces = faces[:self.min_frames]
 
         return faces
 

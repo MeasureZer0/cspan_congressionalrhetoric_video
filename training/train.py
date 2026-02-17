@@ -549,7 +549,7 @@ def train_ssl(args, device, img_dir, weights_dir):
     projection_dim = 256
     model = SimCLRProjectionWrapper(encoder, encoder_output_dim=encoder_dim,
                                     projection_dim=projection_dim).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
     if args.use_memory_bank:
         memory_bank = MemoryBank(size=args.bank_size, dim=projection_dim).to(device)
