@@ -17,7 +17,6 @@ from faces_frames_dataset import FacesFramesSSLDataset, FacesFramesSupervisedDat
 from transforms import VideoSimCLRTransform
 from tqdm import tqdm
 from sklearn.metrics import f1_score, confusion_matrix
-from torch.amp import autocast, GradScaler
 
 # ==========================================
 # Utility
@@ -95,6 +94,54 @@ class EarlyStopping:
             self.best_loss = val_loss
             self.counter = 0
         return self.early_stop
+    
+class MemoryBank(nn.Module):
+    def __init__(self, size: int, dim: int):
+        super().__init__()
+        self.size = size
+        self.dim = dim
+        
+        init = F.normalize(torch.randn(size, dim), dim=1)
+        
+        self.register_buffer("bank", init)
+        self.register_buffer("ptr", torch.zeros(1, dtype=torch.long))
+        self.register_buffer("is_full", torch.zeros(1, dtype=torch.bool))
+
+    @torch.no_grad()
+    def enqueue(self, z: torch.Tensor) -> None:
+        z = F.normalize(z.detach(), dim=1)
+        
+        batch_size = z.shape[0]
+        ptr = self.ptr.item()
+        
+        if batch_size > self.size:
+            z = z[-self.size:]
+            batch_size = self.size
+            
+        if ptr + batch_size <= self.size:
+            self.bank[ptr : ptr + batch_size] = z
+        else:
+            tail = self.size - ptr
+            self.bank[ptr:] = z[:tail]
+            self.bank[: batch_size - tail] = z[tail:]
+
+        new_ptr = (ptr + batch_size) % self.size
+        self.ptr[0] = new_ptr
+        
+        if new_ptr < ptr or (ptr + batch_size) >= self.size:
+            self.is_full[0] = True
+
+    def get(self) -> torch.Tensor:
+        if self.is_full.item():
+            return self.bank.clone()
+        return self.bank[: self.ptr.item()].clone()
+
+    def __len__(self) -> int:
+        return self.size if self.is_full.item() else self.ptr.item()
+
+    def __repr__(self) -> str:
+        return (f"MemoryBank(size={self.size}, dim={self.dim}, "
+                f"filled={len(self)}/{self.size})")
 
 # ==========================================
 # Models
@@ -442,6 +489,36 @@ class NTXentLoss(nn.Module):
         labels = torch.cat([labels + batch_size, labels])
         
         return F.cross_entropy(sim_matrix, labels)
+    
+class NTXentLossWithMemoryBank(nn.Module):
+
+    def __init__(self, temperature: float = 0.5):
+        super().__init__()
+        self.temperature = temperature
+
+    def forward(self, z1: torch.Tensor, z2: torch.Tensor, memory_bank) -> torch.Tensor:
+        B = z1.size(0)
+        z1 = F.normalize(z1, dim=1)         
+        z2 = F.normalize(z2, dim=1)         
+
+        pos_sim = (z1 * z2).sum(dim=1, keepdim=True) / self.temperature
+
+        inbatch_sim = torch.mm(z1, z2.T) / self.temperature
+        diag_mask = torch.eye(B, device=z1.device, dtype=torch.bool)
+        inbatch_sim = inbatch_sim.masked_fill(
+            diag_mask, torch.finfo(inbatch_sim.dtype).min
+        )
+
+        bank = memory_bank.get()                                
+        bank_sim = torch.mm(z1, bank.T) / self.temperature
+
+        logits = torch.cat([pos_sim, inbatch_sim, bank_sim], dim=1)
+        labels = torch.zeros(B, dtype=torch.long, device=z1.device)
+        loss = F.cross_entropy(logits, labels)
+
+        memory_bank.enqueue(z2)
+
+        return loss
 
 def train_ssl(args, device, img_dir, weights_dir):
     print(f"--- STARTING SSL PRETRAINING (SimCLR) with {args.encoder} ---")
@@ -454,16 +531,9 @@ def train_ssl(args, device, img_dir, weights_dir):
 
     transform = VideoSimCLRTransform(size=128)
     ssl_ds = SimCLRDataset(base_ds, transform)
-
-    loader = DataLoader(
-        ssl_ds, 
-        batch_size=args.batch_size, 
-        shuffle=True, 
-        collate_fn=ssl_collate_fn,
-        pin_memory=True
-        )
+    loader = DataLoader(ssl_ds, batch_size=args.batch_size, shuffle=True,
+                        collate_fn=ssl_collate_fn, pin_memory=True)
     
-    # Choose encoder
     if args.encoder == 'baseline':
         encoder = TinyMLPEncoder(hidden_size=64).to(device)
         encoder_dim = 64
@@ -475,21 +545,27 @@ def train_ssl(args, device, img_dir, weights_dir):
         encoder_dim = 64
     else:
         raise ValueError(f"Unknown encoder: {args.encoder}")
-    
-    model = SimCLRProjectionWrapper(encoder, encoder_output_dim=encoder_dim).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    nt_xent_loss = NTXentLoss()
 
-    scaler = GradScaler()
+    projection_dim = 256
+    model = SimCLRProjectionWrapper(encoder, encoder_output_dim=encoder_dim,
+                                    projection_dim=projection_dim).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+    if args.use_memory_bank:
+        memory_bank = MemoryBank(size=args.bank_size, dim=projection_dim).to(device)
+        criterion = NTXentLossWithMemoryBank(temperature=args.temperature)
+        print(f"Using Memory Bank | size={args.bank_size}, dim={projection_dim}, temperature={args.temperature}")
+    else:
+        criterion = NTXentLoss(temperature=args.temperature)
+        memory_bank = None
+        print(f"Using standard NTXentLoss | temperature={args.temperature}")
 
     accumulation_steps = args.accumulation_steps
-
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.epochs, eta_min=1e-6
-    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
 
     print(f"Effective batch size: {args.batch_size * accumulation_steps}")
     print(f"Initial LR: {1e-3}")
+
     for epoch in range(args.epochs):
         model.train()
         epoch_loss = 0.0
@@ -500,32 +576,41 @@ def train_ssl(args, device, img_dir, weights_dir):
         for i, (v1, v2, lengths) in enumerate(pbar):
             v1 = v1.to(device)
             v2 = v2.to(device)
-            with autocast(device_type="cuda"):
-                z1 = model(v1, lengths)
-                z2 = model(v2, lengths)
-                loss = nt_xent_loss(z1, z2) / accumulation_steps
-            
-            scaler.scale(loss).backward()
-            
+
+            z1 = model(v1, lengths)
+            z2 = model(v2, lengths)
+
+            if args.use_memory_bank:
+                loss = criterion(z1, z2, memory_bank)
+            else:
+                loss = criterion(z1, z2)
+            loss = loss / accumulation_steps
+
+            loss.backward()
+
             if (i + 1) % accumulation_steps == 0:
-                scaler.step(optimizer)
-                scaler.update()
+                optimizer.step()
                 optimizer.zero_grad()
             
             epoch_loss += loss.item() * accumulation_steps
             num_batches += 1
-            pbar.set_postfix(loss=loss.item() * accumulation_steps)
+            postfix = {"loss": f"{loss.item() * accumulation_steps:.4f}"}
+            if args.use_memory_bank:
+                postfix["bank"] = f"{len(memory_bank)}/{args.bank_size}"
+            pbar.set_postfix(**postfix)
         
         if (len(loader) % accumulation_steps) != 0:
-            scaler.step(optimizer)
-            scaler.update()
+            optimizer.step()
             optimizer.zero_grad()
-        
-        avg_loss = epoch_loss / num_batches
-        current_lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch {epoch+1}/{args.epochs} - Avg Loss: {avg_loss:.4f}, LR: {current_lr:.6f}")
-        
-        scheduler.step()
+    
+    avg_loss = epoch_loss / num_batches
+    current_lr = optimizer.param_groups[0]['lr']
+    print(f"Epoch {epoch+1}/{args.epochs} - Avg Loss: {avg_loss:.4f}, LR: {current_lr:.6f}")
+    scheduler.step()
+    
+    save_path = weights_dir / f"ssl_backbone_{args.encoder}.pt"
+    torch.save(encoder.state_dict(), save_path)
+    print(f"SSL Backbone saved to {save_path}")
     
     save_path = weights_dir / f"ssl_backbone_{args.encoder}.pt"
     torch.save(encoder.state_dict(), save_path)
@@ -579,11 +664,17 @@ def train_supervised(args, device, img_dir, csv_file, weights_dir, logs_dir):
         else:
             print(f"Warning: SSL weights not found at {ssl_path}")
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-    criterion = nn.CrossEntropyLoss()
-    
-    # Mixed Precision
-    scaler = GradScaler()
+    optimizer = torch.optim.Adam([
+    {"params": model.image_extractor.parameters(), "lr": 1e-5},
+    {"params": model.gru.parameters(), "lr": 1e-4},
+    {"params": model.attention.parameters(), "lr": 5e-4},
+    {"params": model.classifier.parameters(), "lr": 5e-4},
+])
+
+    class_counts = np.bincount([label for _, label in full_ds])
+    weights = 1.0 / torch.tensor(class_counts, dtype=torch.float)
+    weights = weights / weights.sum()
+    criterion = nn.CrossEntropyLoss(weight=weights.to(device))
     
     # Gradient Accumulation
     accumulation_steps = args.accumulation_steps
@@ -593,7 +684,7 @@ def train_supervised(args, device, img_dir, csv_file, weights_dir, logs_dir):
     )
     
     # Early Stopping
-    early_stopping = EarlyStopping(patience=5, min_delta=0.001)
+    early_stopping = EarlyStopping(patience=10, min_delta=0.0001)
     
     best_val_acc = 0.0
     best_model_path = weights_dir / f"best_{args.encoder}_supervised.pt"
@@ -622,16 +713,15 @@ def train_supervised(args, device, img_dir, csv_file, weights_dir, logs_dir):
             for i, (faces, labels, lengths) in enumerate(pbar):
                 labels = labels.to(device)
                 faces = faces.to(device)
+                lengths = lengths.to(device)
                 
-                with autocast(device_type="cuda"):
-                    logits = model(faces, lengths)
-                    loss = criterion(logits, labels) / accumulation_steps
+                logits = model(faces, lengths)
+                loss = criterion(logits, labels) / accumulation_steps
                 
-                scaler.scale(loss).backward()
+                loss.backward()
                 
                 if (i + 1) % accumulation_steps == 0:
-                    scaler.step(optimizer)
-                    scaler.update()
+                    optimizer.step()
                     optimizer.zero_grad()
                 
                 train_loss += loss.item() * accumulation_steps
@@ -642,9 +732,9 @@ def train_supervised(args, device, img_dir, csv_file, weights_dir, logs_dir):
                                 acc=correct/total if total > 0 else 0)
             
             if (len(train_loader) % accumulation_steps) != 0:
-                scaler.step(optimizer)
-                scaler.update()
+                optimizer.step()
                 optimizer.zero_grad()
+
             
             train_acc = correct / total
             avg_train_loss = train_loss / len(train_loader)
@@ -657,11 +747,12 @@ def train_supervised(args, device, img_dir, csv_file, weights_dir, logs_dir):
             
             with torch.no_grad():
                 for faces, labels, lengths in val_loader:
+                    faces = faces.to(device)
                     labels = labels.to(device)
+                    lengths = lengths.to(device)
                     
-                    with autocast(device_type="cuda"):
-                        logits = model(faces, lengths)
-                        loss = criterion(logits, labels)
+                    logits = model(faces, lengths)
+                    loss = criterion(logits, labels)
                     
                     val_loss += loss.item()
                     preds = logits.argmax(dim=1)
@@ -718,7 +809,9 @@ def train_supervised(args, device, img_dir, csv_file, weights_dir, logs_dir):
     
     with torch.no_grad():
         for faces, labels, lengths in test_loader:
+            faces = faces.to(device)
             labels = labels.to(device)
+            lengths = lengths.to(device)
             logits = model(faces, lengths)
             preds = logits.argmax(dim=1)
             
@@ -759,6 +852,24 @@ if __name__ == "__main__":
     parser.add_argument("--load-ssl", action="store_true", help="Load SSL pretrained weights")
     parser.add_argument("--frame-skip", type=int, default=15, help="Frame skip")
     parser.add_argument("--subset", type=int, default=None, help="Use only N samples for SSL")
+
+    parser.add_argument(
+        "--use-memory-bank",
+        action="store_true",
+        help="Memory bank for SSL"
+    )
+    parser.add_argument(
+        "--bank-size",
+        type=int,
+        default=32768,
+        help="Memory bank size (default: 4096)"
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.5,
+        help="Temperature for NT-Xent loss (default: 0.5)"
+    )
     
     args = parser.parse_args()
 
