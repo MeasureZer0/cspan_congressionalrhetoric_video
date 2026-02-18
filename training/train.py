@@ -502,7 +502,7 @@ class NTXentLossWithMemoryBank(nn.Module):
 
         inbatch_sim = torch.mm(z1, z2.T) / self.temperature
         diag_mask = torch.eye(B, device=z1.device, dtype=torch.bool)
-        inbatch_sim = inbatch_sim.masked_fill(diag_mask, torch.finfo(torch.float16).min)
+        inbatch_sim = inbatch_sim.masked_fill(diag_mask, torch.finfo(torch.bfloat16).min)
 
         bank = memory_bank.get()
         bank_sim = torch.mm(z1, bank.T) / self.temperature
