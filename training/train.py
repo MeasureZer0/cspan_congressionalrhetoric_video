@@ -470,46 +470,41 @@ class NTXentLoss(nn.Module):
     def __init__(self, temperature=0.5):
         super().__init__()
         self.temperature = temperature
-    
+
     def forward(self, z1, z2):
         batch_size = z1.size(0)
-        z1 = F.normalize(z1, dim=1)
-        z2 = F.normalize(z2, dim=1)
-        
-        # [2*B, D]
-        z = torch.cat([z1, z2], dim=0)
-        
-        # [2*B, 2*B]
-        sim_matrix = torch.mm(z, z.T) / self.temperature
+        z1 = F.normalize(z1.float(), dim=1)
+        z2 = F.normalize(z2.float(), dim=1)
+
+        z = torch.cat([z1, z2], dim=0)                        
+        sim_matrix = torch.mm(z, z.T) / self.temperature     
 
         mask = torch.eye(2 * batch_size, device=z.device, dtype=torch.bool)
-        sim_matrix = sim_matrix.masked_fill(mask, torch.finfo(sim_matrix.dtype).min)
-        
+        sim_matrix = sim_matrix.masked_fill(mask, torch.finfo(torch.float16).min)
+
         labels = torch.arange(batch_size, device=z1.device)
         labels = torch.cat([labels + batch_size, labels])
-        
-        return F.cross_entropy(sim_matrix, labels)
-    
-class NTXentLossWithMemoryBank(nn.Module):
 
+        return F.cross_entropy(sim_matrix, labels)
+
+
+class NTXentLossWithMemoryBank(nn.Module):
     def __init__(self, temperature: float = 0.5):
         super().__init__()
         self.temperature = temperature
 
     def forward(self, z1: torch.Tensor, z2: torch.Tensor, memory_bank) -> torch.Tensor:
         B = z1.size(0)
-        z1 = F.normalize(z1, dim=1)         
-        z2 = F.normalize(z2, dim=1)         
+        z1 = F.normalize(z1.float(), dim=1)
+        z2 = F.normalize(z2.float(), dim=1)
 
         pos_sim = (z1 * z2).sum(dim=1, keepdim=True) / self.temperature
 
         inbatch_sim = torch.mm(z1, z2.T) / self.temperature
         diag_mask = torch.eye(B, device=z1.device, dtype=torch.bool)
-        inbatch_sim = inbatch_sim.masked_fill(
-            diag_mask, torch.finfo(inbatch_sim.dtype).min
-        )
+        inbatch_sim = inbatch_sim.masked_fill(diag_mask, torch.finfo(torch.float16).min)
 
-        bank = memory_bank.get()                                
+        bank = memory_bank.get()
         bank_sim = torch.mm(z1, bank.T) / self.temperature
 
         logits = torch.cat([pos_sim, inbatch_sim, bank_sim], dim=1)
@@ -517,39 +512,46 @@ class NTXentLossWithMemoryBank(nn.Module):
         loss = F.cross_entropy(logits, labels)
 
         memory_bank.enqueue(z2)
-
         return loss
+    
+def _build_encoder(args, device):
+    if args.encoder == 'baseline':
+        encoder = TinyMLPEncoder(hidden_size=64).to(device)
+        encoder_dim = 64
+    elif args.encoder == 'fast_gru':
+        encoder = FastGRU(hidden_size=128, use_efficient_cnn=True).to(device)
+        encoder_dim = 128
+    elif args.encoder == 'resnet_lstm':
+        encoder = FeatureAggregatingLSTM(hidden_size=64).to(device)
+        encoder_dim = 64
+    else:
+        raise ValueError(f"Unknown encoder: {args.encoder}")
+    return encoder, encoder_dim
 
 def train_ssl(args, device, img_dir, weights_dir):
     print(f"--- STARTING SSL PRETRAINING (SimCLR) with {args.encoder} ---")
     base_ds = FacesFramesSSLDataset(img_dir)
 
     if args.subset and args.subset < len(base_ds):
-        indicies = random.sample(range(len(base_ds)), args.subset)
-        base_ds = Subset(base_ds, indicies)
+        indices = random.sample(range(len(base_ds)), args.subset)
+        base_ds = Subset(base_ds, indices)
         print(f"Using subset of {args.subset} samples for SSL training")
 
     transform = VideoSimCLRTransform(size=128)
     ssl_ds = SimCLRDataset(base_ds, transform)
     loader = DataLoader(ssl_ds, batch_size=args.batch_size, shuffle=True,
                         collate_fn=ssl_collate_fn, pin_memory=True)
-    
-    if args.encoder == 'baseline':
-        encoder = TinyMLPEncoder(hidden_size=64).to(device)
-        encoder_dim = 64
-    elif args.encoder == 'fast_gru':
-        encoder = FastGRU(hidden_size=128, use_efficient_cnn=True).to(device)
-        encoder_dim = 128    
-    elif args.encoder == 'resnet_lstm':
-        encoder = FeatureAggregatingLSTM(hidden_size=64).to(device)
-        encoder_dim = 64
-    else:
-        raise ValueError(f"Unknown encoder: {args.encoder}")
 
+    encoder, encoder_dim = _build_encoder(args, device)
     projection_dim = 256
     model = SimCLRProjectionWrapper(encoder, encoder_output_dim=encoder_dim,
                                     projection_dim=projection_dim).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+
+    use_amp = (not args.use_memory_bank) and (device.type == "cuda")
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    if use_amp:
+        print("Mixed precision (float16) ENABLED for SSL training")
 
     if args.use_memory_bank:
         memory_bank = MemoryBank(size=args.bank_size, dim=projection_dim).to(device)
@@ -560,102 +562,71 @@ def train_ssl(args, device, img_dir, weights_dir):
         memory_bank = None
         print(f"Using standard NTXentLoss | temperature={args.temperature}")
 
-    accumulation_steps = args.accumulation_steps
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
-
-    print(f"Effective batch size: {args.batch_size * accumulation_steps}")
-    print(f"Initial LR: {1e-3}")
+    print(f"Batch size: {args.batch_size} | Initial LR: 1e-4")
 
     for epoch in range(args.epochs):
         model.train()
         epoch_loss = 0.0
         num_batches = 0
         pbar = tqdm(loader, desc=f"SSL Epoch {epoch+1}", leave=True)
-        optimizer.zero_grad()
-        
-        for i, (v1, v2, lengths) in enumerate(pbar):
+
+        for v1, v2, lengths in pbar:
             v1 = v1.to(device)
             v2 = v2.to(device)
 
-            z1 = model(v1, lengths)
-            z2 = model(v2, lengths)
+            optimizer.zero_grad()
 
             if args.use_memory_bank:
+                z1 = model(v1, lengths)
+                z2 = model(v2, lengths)
                 loss = criterion(z1, z2, memory_bank)
-            else:
-                loss = criterion(z1, z2)
-            loss = loss / accumulation_steps
-
-            loss.backward()
-
-            if (i + 1) % accumulation_steps == 0:
+                loss.backward()
                 optimizer.step()
-                optimizer.zero_grad()
-            
-            epoch_loss += loss.item() * accumulation_steps
+
+            else:
+                with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
+                    z1 = model(v1, lengths)
+                    z2 = model(v2, lengths)
+                loss = criterion(z1, z2)
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+
+            epoch_loss += loss.item()
             num_batches += 1
-            postfix = {"loss": f"{loss.item() * accumulation_steps:.4f}"}
+
+            postfix = {"loss": f"{loss.item():.4f}"}
             if args.use_memory_bank:
                 postfix["bank"] = f"{len(memory_bank)}/{args.bank_size}"
             pbar.set_postfix(**postfix)
-        
-        if (len(loader) % accumulation_steps) != 0:
-            optimizer.step()
-            optimizer.zero_grad()
-    
-    avg_loss = epoch_loss / num_batches
-    current_lr = optimizer.param_groups[0]['lr']
-    print(f"Epoch {epoch+1}/{args.epochs} - Avg Loss: {avg_loss:.4f}, LR: {current_lr:.6f}")
-    scheduler.step()
-    
-    save_path = weights_dir / f"ssl_backbone_{args.encoder}.pt"
-    torch.save(encoder.state_dict(), save_path)
-    print(f"SSL Backbone saved to {save_path}")
-    
+
+        avg_loss = epoch_loss / num_batches
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"Epoch {epoch+1}/{args.epochs} - Avg Loss: {avg_loss:.4f}, LR: {current_lr:.6f}")
+        scheduler.step()
+
     save_path = weights_dir / f"ssl_backbone_{args.encoder}.pt"
     torch.save(encoder.state_dict(), save_path)
     print(f"SSL Backbone saved to {save_path}")
 
 def train_supervised(args, device, img_dir, csv_file, weights_dir, logs_dir):
     print(f"--- STARTING SUPERVISED TRAINING with {args.encoder} ---")
-    
+
     full_ds = FacesFramesSupervisedDataset(csv_file, img_dir)
     train_idx, val_idx, test_idx = stratified_split(full_ds, (0.8, 0.1, 0.1))
 
-    train_ds = Subset(full_ds, train_idx)
-    val_ds = Subset(full_ds, val_idx)
-    test_ds = Subset(full_ds, test_idx)
+    train_loader = DataLoader(Subset(full_ds, train_idx), batch_size=args.batch_size,
+                              shuffle=True, collate_fn=supervised_collate_fn, pin_memory=True)
+    val_loader   = DataLoader(Subset(full_ds, val_idx),   batch_size=args.batch_size,
+                              collate_fn=supervised_collate_fn, pin_memory=True)
+    test_loader  = DataLoader(Subset(full_ds, test_idx),  batch_size=args.batch_size,
+                              collate_fn=supervised_collate_fn, pin_memory=True)
 
-    train_loader = DataLoader(
-        train_ds, 
-        batch_size=args.batch_size, 
-        shuffle=True, 
-        collate_fn=supervised_collate_fn,
-        pin_memory=True,
-    )
-    val_loader = DataLoader(
-        val_ds, 
-        batch_size=args.batch_size, 
-        collate_fn=supervised_collate_fn,
-        pin_memory=True,
-    )
-    test_loader = DataLoader(
-        test_ds, 
-        batch_size=args.batch_size, 
-        collate_fn=supervised_collate_fn,
-        pin_memory=True,
-    )
+    model, _ = _build_encoder(args, device)
 
-    # Choose encoder
-    if args.encoder == 'baseline':
-        model = TinyMLPEncoder(hidden_size=64).to(device)
-    elif args.encoder == 'fast_gru':
-        model = FastGRU(hidden_size=128, use_efficient_cnn=True).to(device)
-    elif args.encoder == 'resnet_lstm':
-        model = FeatureAggregatingLSTM(hidden_size=64).to(device)
-    else:
-        raise ValueError(f"Unknown encoder: {args.encoder}")
-    
     if args.load_ssl:
         ssl_path = weights_dir / f"ssl_backbone_{args.encoder}.pt"
         if ssl_path.exists():
@@ -665,223 +636,171 @@ def train_supervised(args, device, img_dir, csv_file, weights_dir, logs_dir):
             print(f"Warning: SSL weights not found at {ssl_path}")
 
     optimizer = torch.optim.Adam([
-    {"params": model.image_extractor.parameters(), "lr": 1e-5},
-    {"params": model.gru.parameters(), "lr": 1e-4},
-    {"params": model.attention.parameters(), "lr": 5e-4},
-    {"params": model.classifier.parameters(), "lr": 5e-4},
-])
+        {"params": model.image_extractor.parameters(), "lr": 1e-5},
+        {"params": model.gru.parameters(),             "lr": 1e-4},
+        {"params": model.attention.parameters(),       "lr": 5e-4},
+        {"params": model.classifier.parameters(),      "lr": 5e-4},
+    ])
 
     class_counts = np.bincount([label for _, label in full_ds])
     weights = 1.0 / torch.tensor(class_counts, dtype=torch.float)
     weights = weights / weights.sum()
     criterion = nn.CrossEntropyLoss(weight=weights.to(device))
-    
-    # Gradient Accumulation
-    accumulation_steps = args.accumulation_steps
 
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.epochs, eta_min=1e-6
-    )
-    
-    # Early Stopping
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
     early_stopping = EarlyStopping(patience=10, min_delta=0.0001)
-    
+
     best_val_acc = 0.0
     best_model_path = weights_dir / f"best_{args.encoder}_supervised.pt"
-    
-    # CSV Logging
+
     logs_dir.mkdir(parents=True, exist_ok=True)
     csv_path = logs_dir / f"supervised_{args.encoder}_log.csv"
-    
-    # Open CSV file and write header
+
     csv_file_handle = open(csv_path, mode='w', newline='')
     writer = csv.writer(csv_file_handle)
     writer.writerow([
-        "epoch", "train_loss", "val_loss", 
-        "train_acc", "val_acc", "val_f1_macro", "val_conf_matrix"
+        "epoch", "train_loss", "val_loss",
+        "train_acc", "val_acc", "val_f1_macro", "val_conf_matrix", "lr"
     ])
-    
+
     try:
         for epoch in range(args.epochs):
             # ==================== TRAINING ====================
             model.train()
             train_loss = 0.0
             correct, total = 0, 0
-            optimizer.zero_grad()
-            
+
             pbar = tqdm(train_loader, desc=f"Supervised Epoch {epoch+1}")
-            for i, (faces, labels, lengths) in enumerate(pbar):
+            for faces, labels, lengths in pbar:
+                faces  = faces.to(device)
                 labels = labels.to(device)
-                faces = faces.to(device)
-                lengths = lengths.to(device)
-                
+
+                optimizer.zero_grad()
                 logits = model(faces, lengths)
-                loss = criterion(logits, labels) / accumulation_steps
-                
+                loss = criterion(logits, labels)
                 loss.backward()
-                
-                if (i + 1) % accumulation_steps == 0:
-                    optimizer.step()
-                    optimizer.zero_grad()
-                
-                train_loss += loss.item() * accumulation_steps
+                optimizer.step()
+
+                train_loss += loss.item()
                 preds = logits.argmax(dim=1)
                 correct += (preds == labels).sum().item()
                 total += labels.size(0)
-                pbar.set_postfix(loss=loss.item() * accumulation_steps, 
-                                acc=correct/total if total > 0 else 0)
-            
-            if (len(train_loader) % accumulation_steps) != 0:
-                optimizer.step()
-                optimizer.zero_grad()
+                pbar.set_postfix(loss=f"{loss.item():.4f}",
+                                 acc=f"{correct/total:.4f}" if total > 0 else "0")
 
-            
             train_acc = correct / total
             avg_train_loss = train_loss / len(train_loader)
-            
+
             # ==================== VALIDATION ====================
             model.eval()
             val_loss = 0.0
-            all_preds = []
-            all_labels = []
-            
+            all_preds, all_labels = [], []
+
             with torch.no_grad():
                 for faces, labels, lengths in val_loader:
-                    faces = faces.to(device)
+                    faces  = faces.to(device)
                     labels = labels.to(device)
-                    lengths = lengths.to(device)
-                    
                     logits = model(faces, lengths)
-                    loss = criterion(logits, labels)
-                    
-                    val_loss += loss.item()
+                    val_loss += criterion(logits, labels).item()
                     preds = logits.argmax(dim=1)
                     all_preds.extend(preds.cpu().numpy())
                     all_labels.extend(labels.cpu().numpy())
-            
+
             avg_val_loss = val_loss / len(val_loader)
             val_acc = np.mean(np.array(all_preds) == np.array(all_labels))
-            val_f1 = f1_score(all_labels, all_preds, average='macro')
-            val_cm = confusion_matrix(all_labels, all_preds)
+            val_f1  = f1_score(all_labels, all_preds, average='macro')
+            val_cm  = confusion_matrix(all_labels, all_preds)
             val_cm_str = ";".join([",".join(map(str, row)) for row in val_cm])
-            
             current_lr = optimizer.param_groups[0]['lr']
-            
+
             print(f"Epoch {epoch+1}/{args.epochs}")
-            print(f" Train Loss: {avg_train_loss:.4f}, Train Acc: {train_acc:.4f}")
-            print(f" Val Loss: {avg_val_loss:.4f}, Val Acc: {val_acc:.4f}, Val F1: {val_f1:.4f}")
-            print(f" LR: {current_lr:.6f}")
-            
+            print(f"  Train Loss: {avg_train_loss:.4f}, Train Acc: {train_acc:.4f}")
+            print(f"  Val   Loss: {avg_val_loss:.4f}, Val   Acc: {val_acc:.4f}, Val F1: {val_f1:.4f}")
+            print(f"  LR: {current_lr:.6f}")
+
             writer.writerow([
-                epoch+1,
+                epoch + 1,
                 f"{avg_train_loss:.6f}",
                 f"{avg_val_loss:.6f}",
                 f"{train_acc:.6f}",
                 f"{val_acc:.6f}",
                 f"{val_f1:.6f}",
                 val_cm_str,
-                f"{current_lr:.8f}"
+                f"{current_lr:.8f}",
             ])
             csv_file_handle.flush()
-            
+
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
                 torch.save(model.state_dict(), best_model_path)
-                print(f"Saved best model (val_acc: {val_acc:.4f})")
-            
+                print(f"  ✓ Saved best model (val_acc: {val_acc:.4f})")
+
             scheduler.step()
-            
+
             if early_stopping(avg_val_loss):
                 print("Early stopping triggered!")
                 break
-    
+
     finally:
-        # Close CSV file
         csv_file_handle.close()
         print(f"\n✓ Training logs saved to {csv_path}")
-    
+
+    # ==================== TEST ====================
     print("\n--- FINAL TEST EVALUATION ---")
-    model.load_state_dict(torch.load(best_model_path))
+    model.load_state_dict(torch.load(best_model_path, map_location=device))
     model.eval()
-    
-    test_preds = []
-    test_labels_list = []
-    
+
+    test_preds, test_labels_list = [], []
     with torch.no_grad():
         for faces, labels, lengths in test_loader:
-            faces = faces.to(device)
+            faces  = faces.to(device)
             labels = labels.to(device)
-            lengths = lengths.to(device)
-            logits = model(faces, lengths)
-            preds = logits.argmax(dim=1)
-            
+            preds  = model(faces, lengths).argmax(dim=1)
             test_preds.extend(preds.cpu().numpy())
             test_labels_list.extend(labels.cpu().numpy())
-    
+
     test_acc = np.mean(np.array(test_preds) == np.array(test_labels_list))
-    test_f1 = f1_score(test_labels_list, test_preds, average='macro')
-    test_cm = confusion_matrix(test_labels_list, test_preds)
-    
+    test_f1  = f1_score(test_labels_list, test_preds, average='macro')
+    test_cm  = confusion_matrix(test_labels_list, test_preds)
+
     print(f"Test Accuracy: {test_acc:.4f}")
     print(f"Test F1-macro: {test_f1:.4f}")
     print(f"Confusion Matrix:\n{test_cm}")
-    
+
     test_results_path = logs_dir / f"test_results_{args.encoder}.txt"
     with open(test_results_path, 'w') as f:
         f.write(f"Model: {args.encoder}\n")
         f.write(f"Test Accuracy: {test_acc:.4f}\n")
         f.write(f"Test F1-macro: {test_f1:.4f}\n")
         f.write(f"Test Confusion Matrix:\n{test_cm}\n")
-    
     print(f"Test results saved to {test_results_path}")
 
 if __name__ == "__main__":
     set_seed(37)
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", type=str, choices=["ssl", "supervised"], required=True)
-    parser.add_argument(
-        "--encoder", 
-        type=str, 
-        choices=["baseline", "fast_gru", "resnet_lstm"], 
-        default="fast_gru",
-        help="Encoder: baseline, fast_gru, resnet_lstm"
-    )
-    parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--batch-size", type=int, default=4, help="Base batch size")
-    parser.add_argument("--accumulation-steps", type=int, default=4, help="Gradient accumulation steps")
-    parser.add_argument("--load-ssl", action="store_true", help="Load SSL pretrained weights")
-    parser.add_argument("--frame-skip", type=int, default=15, help="Frame skip")
-    parser.add_argument("--subset", type=int, default=None, help="Use only N samples for SSL")
+    parser.add_argument("--mode",    type=str, choices=["ssl", "supervised"], required=True)
+    parser.add_argument("--encoder", type=str, choices=["baseline", "fast_gru", "resnet_lstm"],
+                        default="fast_gru")
+    parser.add_argument("--epochs",          type=int,   default=10)
+    parser.add_argument("--batch-size",      type=int,   default=4)
+    parser.add_argument("--load-ssl",        action="store_true")
+    parser.add_argument("--frame-skip",      type=int,   default=15)
+    parser.add_argument("--subset",          type=int,   default=None)
+    parser.add_argument("--use-memory-bank", action="store_true")
+    parser.add_argument("--bank-size",       type=int,   default=32768)
+    parser.add_argument("--temperature",     type=float, default=0.5)
 
-    parser.add_argument(
-        "--use-memory-bank",
-        action="store_true",
-        help="Memory bank for SSL"
-    )
-    parser.add_argument(
-        "--bank-size",
-        type=int,
-        default=32768,
-        help="Memory bank size (default: 4096)"
-    )
-    parser.add_argument(
-        "--temperature",
-        type=float,
-        default=0.5,
-        help="Temperature for NT-Xent loss (default: 0.5)"
-    )
-    
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    
     if device.type == 'cuda':
         print(f"GPU: {torch.cuda.get_device_name(0)}")
         print(f"Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 
     img_dir, csv_file, weights_dir, logs_dir = _default_paths(args.frame_skip)
     weights_dir.mkdir(parents=True, exist_ok=True)
+
     if args.mode == "ssl":
         train_ssl(args, device, img_dir, weights_dir)
     else:
