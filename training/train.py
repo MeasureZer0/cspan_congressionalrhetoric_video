@@ -160,7 +160,7 @@ class TemporalAttention(nn.Module):
         scores = self.attn(lstm_outputs).squeeze(-1)  # [B, T]
 
         max_len = scores.size(1)
-        mask = torch.arange(max_len, device=lengths.device)[None, :] < lengths[:, None]
+        mask = torch.arange(max_len, device = scores.device)[None, :] < lengths.to(scores.device)[:, None]
         scores[~mask] = -1e9
 
         weights = torch.softmax(scores, dim=1)
@@ -480,7 +480,7 @@ class NTXentLoss(nn.Module):
         sim_matrix = torch.mm(z, z.T) / self.temperature     
 
         mask = torch.eye(2 * batch_size, device=z.device, dtype=torch.bool)
-        sim_matrix = sim_matrix.masked_fill(mask, torch.finfo(torch.float16).min)
+        sim_matrix = sim_matrix.masked_fill(mask, float('-inf'))
 
         labels = torch.arange(batch_size, device=z1.device)
         labels = torch.cat([labels + batch_size, labels])
@@ -502,7 +502,7 @@ class NTXentLossWithMemoryBank(nn.Module):
 
         inbatch_sim = torch.mm(z1, z2.T) / self.temperature
         diag_mask = torch.eye(B, device=z1.device, dtype=torch.bool)
-        inbatch_sim = inbatch_sim.masked_fill(diag_mask, torch.finfo(torch.bfloat16).min)
+        inbatch_sim = inbatch_sim.masked_fill(diag_mask, float('-inf'))
 
         bank = memory_bank.get()
         bank_sim = torch.mm(z1, bank.T) / self.temperature
@@ -528,6 +528,23 @@ def _build_encoder(args, device):
         raise ValueError(f"Unknown encoder: {args.encoder}")
     return encoder, encoder_dim
 
+def _build_optimizer(model, args):
+    if args.encoder == 'fast_gru':
+        return torch.optim.Adam([
+            {"params": model.image_extractor.parameters(), "lr": 1e-5},
+            {"params": model.gru.parameters(),             "lr": 1e-4},
+            {"params": model.attention.parameters(),       "lr": 5e-4},
+            {"params": model.classifier.parameters(),      "lr": 5e-4},
+        ])
+    elif args.encoder == 'resnet_lstm':
+        return torch.optim.Adam([
+            {"params": model.image_extractor.parameters(), "lr": 1e-5},
+            {"params": model.lstm.parameters(),            "lr": 1e-4},
+            {"params": model.classifier.parameters(),      "lr": 5e-4},
+        ])
+    else:  # baseline
+        return torch.optim.Adam(model.parameters(), lr=1e-4)
+
 def train_ssl(args, device, img_dir, weights_dir):
     print(f"--- STARTING SSL PRETRAINING (SimCLR) with {args.encoder} ---")
     base_ds = FacesFramesSSLDataset(img_dir)
@@ -547,11 +564,6 @@ def train_ssl(args, device, img_dir, weights_dir):
     model = SimCLRProjectionWrapper(encoder, encoder_output_dim=encoder_dim,
                                     projection_dim=projection_dim).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-
-    use_amp = (not args.use_memory_bank) and (device.type == "cuda")
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
-    if use_amp:
-        print("Mixed precision (float16) ENABLED for SSL training")
 
     if args.use_memory_bank:
         memory_bank = MemoryBank(size=args.bank_size, dim=projection_dim).to(device)
@@ -582,22 +594,19 @@ def train_ssl(args, device, img_dir, weights_dir):
                 z2 = model(v2, lengths)
                 loss = criterion(z1, z2, memory_bank)
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
-
             else:
-                with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
+                with torch.amp.autocast("cuda", dtype=torch.bfloat16):
                     z1 = model(v1, lengths)
                     z2 = model(v2, lengths)
                 loss = criterion(z1, z2)
-                scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
+                loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                scaler.step(optimizer)
-                scaler.update()
+                optimizer.step()
 
             epoch_loss += loss.item()
             num_batches += 1
-
             postfix = {"loss": f"{loss.item():.4f}"}
             if args.use_memory_bank:
                 postfix["bank"] = f"{len(memory_bank)}/{args.bank_size}"
@@ -635,12 +644,7 @@ def train_supervised(args, device, img_dir, csv_file, weights_dir, logs_dir):
         else:
             print(f"Warning: SSL weights not found at {ssl_path}")
 
-    optimizer = torch.optim.Adam([
-        {"params": model.image_extractor.parameters(), "lr": 1e-5},
-        {"params": model.gru.parameters(),             "lr": 1e-4},
-        {"params": model.attention.parameters(),       "lr": 5e-4},
-        {"params": model.classifier.parameters(),      "lr": 5e-4},
-    ])
+    optimizer = _build_optimizer(model, args)
 
     class_counts = np.bincount([label for _, label in full_ds])
     weights = 1.0 / torch.tensor(class_counts, dtype=torch.float)
