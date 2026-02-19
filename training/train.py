@@ -556,8 +556,16 @@ def train_ssl(args, device, img_dir, weights_dir):
 
     transform = VideoSimCLRTransform(size=128)
     ssl_ds = SimCLRDataset(base_ds, transform)
-    loader = DataLoader(ssl_ds, batch_size=args.batch_size, shuffle=True,
-                        collate_fn=ssl_collate_fn, pin_memory=True)
+
+    loader = DataLoader(
+    ssl_ds,
+    batch_size=args.batch_size,
+    shuffle=True,
+    collate_fn=ssl_collate_fn,
+    num_workers=args.num_workers,
+    pin_memory=True,
+    persistent_workers=True if args.num_workers > 0 else False
+)
 
     encoder, encoder_dim = _build_encoder(args, device)
     projection_dim = 256
@@ -596,8 +604,8 @@ def train_ssl(args, device, img_dir, weights_dir):
         pbar = tqdm(loader, desc=f"SSL Epoch {epoch+1}", leave=True)
 
         for v1, v2, lengths in pbar:
-            v1 = v1.to(device)
-            v2 = v2.to(device)
+            v1 = v1.to(device, non_blocking=True)
+            v2 = v2.to(device, non_blocking=True)
 
             optimizer.zero_grad()
 
@@ -639,12 +647,35 @@ def train_supervised(args, device, img_dir, csv_file, weights_dir, logs_dir):
     full_ds = FacesFramesSupervisedDataset(csv_file, img_dir)
     train_idx, val_idx, test_idx = stratified_split(full_ds, (0.8, 0.1, 0.1))
 
-    train_loader = DataLoader(Subset(full_ds, train_idx), batch_size=args.batch_size,
-                              shuffle=True, collate_fn=supervised_collate_fn, pin_memory=True)
-    val_loader   = DataLoader(Subset(full_ds, val_idx),   batch_size=args.batch_size,
-                              collate_fn=supervised_collate_fn, pin_memory=True)
-    test_loader  = DataLoader(Subset(full_ds, test_idx),  batch_size=args.batch_size,
-                              collate_fn=supervised_collate_fn, pin_memory=True)
+    train_loader = DataLoader(
+        Subset(full_ds, train_idx),
+        batch_size=args.batch_size,
+        shuffle=True,
+        collate_fn=supervised_collate_fn,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        persistent_workers=True if args.num_workers > 0 else False
+    )
+
+    val_loader = DataLoader(
+        Subset(full_ds, val_idx),
+        batch_size=args.batch_size,
+        shuffle=False,
+        collate_fn=supervised_collate_fn,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        persistent_workers=True if args.num_workers > 0 else False
+    )
+
+    test_loader = DataLoader(
+        Subset(full_ds, test_idx),
+        batch_size=args.batch_size,
+        shuffle=False,
+        collate_fn=supervised_collate_fn,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        persistent_workers=True if args.num_workers > 0 else False
+    )
 
     model, _ = _build_encoder(args, device)
 
@@ -688,8 +719,8 @@ def train_supervised(args, device, img_dir, csv_file, weights_dir, logs_dir):
 
             pbar = tqdm(train_loader, desc=f"Supervised Epoch {epoch+1}")
             for faces, labels, lengths in pbar:
-                faces  = faces.to(device)
-                labels = labels.to(device)
+                faces  = faces.to(device, non_blocking=True)
+                labels = labels.to(device, non_blocking=True)
 
                 optimizer.zero_grad()
                 logits = model(faces, lengths)
@@ -798,6 +829,7 @@ if __name__ == "__main__":
     parser.add_argument("--encoder", type=str, choices=["baseline", "fast_gru", "resnet_lstm"],
                         default="fast_gru")
     parser.add_argument("--epochs",          type=int,   default=10)
+    parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--batch-size",      type=int,   default=4)
     parser.add_argument("--load-ssl",        action="store_true")
     parser.add_argument("--frame-skip",      type=int,   default=15)
