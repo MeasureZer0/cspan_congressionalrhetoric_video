@@ -519,7 +519,7 @@ def _build_encoder(args, device):
         encoder = TinyMLPEncoder(hidden_size=64).to(device)
         encoder_dim = 64
     elif args.encoder == 'fast_gru':
-        encoder = FastGRU(hidden_size=128, use_efficient_cnn=True).to(device)
+        encoder = FastGRU(hidden_size=128, use_efficient_cnn=False).to(device)
         encoder_dim = 128
     elif args.encoder == 'resnet_lstm':
         encoder = FeatureAggregatingLSTM(hidden_size=64).to(device)
@@ -531,10 +531,10 @@ def _build_encoder(args, device):
 def _build_optimizer(model, args):
     if args.encoder == 'fast_gru':
         return torch.optim.Adam([
-            {"params": model.image_extractor.parameters(), "lr": 1e-5},
-            {"params": model.gru.parameters(),             "lr": 1e-4},
-            {"params": model.attention.parameters(),       "lr": 5e-4},
-            {"params": model.classifier.parameters(),      "lr": 5e-4},
+            {"params": model.image_extractor.parameters(), "lr": 1e-3},
+            {"params": model.gru.parameters(),             "lr": 1e-3},
+            {"params": model.attention.parameters(),       "lr": 1e-3},
+            {"params": model.classifier.parameters(),      "lr": 1e-3},
         ])
     elif args.encoder == 'resnet_lstm':
         return torch.optim.Adam([
@@ -561,9 +561,21 @@ def train_ssl(args, device, img_dir, weights_dir):
 
     encoder, encoder_dim = _build_encoder(args, device)
     projection_dim = 256
+
+    if args.encoder == 'fast_gru':
+        for name, param in encoder.image_extractor.named_parameters():
+            if "layer3" in name or "layer4" in name:
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
+
     model = SimCLRProjectionWrapper(encoder, encoder_output_dim=encoder_dim,
                                     projection_dim=projection_dim).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    optimizer = torch.optim.Adam([
+        {"params": encoder.image_extractor.parameters(), "lr": 1e-5},
+        {"params": encoder.gru.parameters(),             "lr": 1e-4},
+        {"params": model.projector.parameters(),         "lr": 1e-4},
+    ])
 
     if args.use_memory_bank:
         memory_bank = MemoryBank(size=args.bank_size, dim=projection_dim).to(device)
@@ -652,7 +664,7 @@ def train_supervised(args, device, img_dir, csv_file, weights_dir, logs_dir):
     criterion = nn.CrossEntropyLoss(weight=weights.to(device))
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
-    early_stopping = EarlyStopping(patience=10, min_delta=0.0001)
+    early_stopping = EarlyStopping(patience=15, min_delta=0.0001)
 
     best_val_acc = 0.0
     best_model_path = weights_dir / f"best_{args.encoder}_supervised.pt"
