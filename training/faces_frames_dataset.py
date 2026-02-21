@@ -155,7 +155,7 @@ class SimCLRDataset(Dataset):
     of the same sample: (view1, view2).
     """
 
-    def __init__(self, base_dataset: Dataset, transform: Any) -> None:
+    def __init__(self, base_dataset: Dataset, transform: Any) -> None:  # noqa: ANN401
         """
         Args:
             base_dataset (Dataset): Dataset returning tensors without labels.
