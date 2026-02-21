@@ -1,11 +1,9 @@
-import os
 from pathlib import Path
-from typing import Any, Callable, Optional, Literal
 
+import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
-import numpy as np
 
 
 class FacesFramesSSLDataset(Dataset):
@@ -15,6 +13,7 @@ class FacesFramesSSLDataset(Dataset):
 
     Used as a base dataset for SSL methods.
     """
+
     def __init__(self, img_dir: Path, min_frames: int = 8, max_frames: int = 120):
         """
         Args:
@@ -48,19 +47,19 @@ class FacesFramesSSLDataset(Dataset):
 
         try:
             faces = torch.load(face_path)  # [frames, C, H, W]
-        except Exception as e:
+        except Exception:
             print(f"Corrupted file: {face_path}")
             return self.__getitem__((idx + 1) % len(self))
 
         n_frames = faces.shape[0]
 
         if n_frames > self.max_frames:
-            faces = faces[:self.max_frames]
+            faces = faces[: self.max_frames]
 
         elif n_frames < self.min_frames:
             repeat_factor = int(np.ceil(self.min_frames / n_frames))
             faces = faces.repeat(repeat_factor, 1, 1, 1)
-            faces = faces[:self.min_frames]
+            faces = faces[: self.min_frames]
 
         return faces
 
@@ -126,6 +125,7 @@ class FacesFramesSupervisedDataset(Dataset):
         label = torch.tensor(self.classes[label_str], dtype=torch.long)
 
         return faces, label
+
 
 class SimCLRDataset(Dataset):
     """
