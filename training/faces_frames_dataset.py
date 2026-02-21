@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -19,7 +20,9 @@ class FacesFramesSSLDataset(Dataset):
     Used as a base dataset for SSL methods.
     """
 
-    def __init__(self, img_dir: Path, min_frames: int = 8, max_frames: int = 120):
+    def __init__(
+        self, img_dir: Path, min_frames: int = 8, max_frames: int = 120
+    ) -> None:
         """
         Args:
             img_dir (Path): Directory containing *_faces.pt and *_flows.pt files.
@@ -29,7 +32,7 @@ class FacesFramesSSLDataset(Dataset):
         self.min_frames = min_frames
         self.max_frames = max_frames
 
-    def _build_sample(self):
+    def _build_sample(self) -> list[str]:
         """
         Scan directory and collect all available sample stems.
 
@@ -39,14 +42,14 @@ class FacesFramesSSLDataset(Dataset):
         files = sorted(self.img_dir.glob("*_faces.pt"))
         return [f.stem.replace("_faces", "") for f in files]
 
-    def __len__(self):
+    def __len__(self) -> int:
         """
         Returns:
             int: Number of available samples.
         """
         return len(self.samples)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> torch.Tensor:
         """
         Loads a single face tensor sequence from disk.
 
@@ -89,7 +92,7 @@ class FacesFramesSupervisedDataset(Dataset):
     Returns (faces, label).
     """
 
-    def __init__(self, csv_file: Path, img_dir: Path):
+    def __init__(self, csv_file: Path, img_dir: Path) -> None:
         """
         Args:
             csv_file (Path): CSV file containing labels.
@@ -101,7 +104,7 @@ class FacesFramesSupervisedDataset(Dataset):
         self.classes = {"negative": 0, "neutral": 1, "positive": 2}
         self.samples = self._build_index()
 
-    def _build_index(self):
+    def _build_index(self) -> list[tuple[str, str]]:
         """
         Build index of valid samples based on CSV and existing files.
 
@@ -118,14 +121,14 @@ class FacesFramesSupervisedDataset(Dataset):
                 samples.append((stem, label_str))
         return samples
 
-    def __len__(self):
+    def __len__(self) -> int:
         """
         Returns:
             int: Number of labeled samples.
         """
         return len(self.samples)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Load tensors and label for supervised learning.
 
@@ -152,7 +155,7 @@ class SimCLRDataset(Dataset):
     of the same sample: (view1, view2).
     """
 
-    def __init__(self, base_dataset: Dataset, transform):
+    def __init__(self, base_dataset: Dataset, transform: Any) -> None:
         """
         Args:
             base_dataset (Dataset): Dataset returning tensors without labels.
@@ -161,14 +164,14 @@ class SimCLRDataset(Dataset):
         self.base = base_dataset
         self.transform = transform
 
-    def __len__(self):
+    def __len__(self) -> int:
         """
         Returns:
             int: Number of samples in base dataset.
         """
         return len(self.base)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Generate two augmented views of the same sample.
 
@@ -176,7 +179,7 @@ class SimCLRDataset(Dataset):
             idx (int): Sample index.
 
         Returns:
-            tuple[Tensor, Tensor]: Two augmented tensors.
+            tuple[torch.Tensor, torch.Tensor]: Two augmented tensors.
         """
         faces = self.base[idx]
 

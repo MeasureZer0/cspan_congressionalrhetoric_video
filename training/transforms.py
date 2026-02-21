@@ -17,8 +17,12 @@ class VideoSimCLRTransform:
     """
 
     def __init__(
-        self, size=224, jitter_params=(0.8, 0.8, 0.8, 0.2), gray_p=0.2, blur_kernel=None
-    ):
+        self,
+        size: int = 224,
+        jitter_params: tuple[float, float, float, float] = (0.8, 0.8, 0.8, 0.2),
+        gray_p: float = 0.2,
+        blur_kernel: int | None = None,
+    ) -> None:
         """
         Args:
             size (int): Output frame size (H=W=size)
@@ -31,7 +35,9 @@ class VideoSimCLRTransform:
         self.gray_p = gray_p
         self.blur_kernel = blur_kernel or max(3, int(size * 0.1) | 1)
 
-    def get_jitter_params(self, brightness, contrast, saturation, hue):
+    def get_jitter_params(
+        self, brightness: float, contrast: float, saturation: float, hue: float
+    ) -> tuple[float, float, float, float]:
         """
         Samples color jitter parameters once for the entire video sequence.
         """
@@ -41,7 +47,7 @@ class VideoSimCLRTransform:
         h = random.uniform(-hue, hue)
         return b, c, s, h
 
-    def __call__(self, video: torch.Tensor):
+    def __call__(self, video: torch.Tensor) -> torch.Tensor:
         """
         Args:
             video (Tensor): [T, C, H, W]

@@ -3,7 +3,6 @@ import csv
 import random
 from datetime import date
 from pathlib import Path
-from typing import List
 
 import numpy as np
 import torch
@@ -31,7 +30,7 @@ on face tensor sequences extracted from videos.
 # ==========================================
 
 
-def set_seed(seed=42):
+def set_seed(seed: int = 42) -> None:
     """Sets the seed for reproducibility across random, numpy, and torch."""
     random.seed(seed)
     np.random.seed(seed)
@@ -52,10 +51,11 @@ def _default_paths() -> tuple[Path, Path, Path, Path]:
     return img_dir, csv_file, weights_dir, logs_dir
 
 
-def ssl_collate_fn(batch):
+def ssl_collate_fn(batch: list) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Collate function for SimCLR SSL training.
-    Pairs two augmented views of the same video and pads them to the max length in batch.
+    Pairs two augmented views of the same video and pads
+        them to the max length in batch.
     """
     v1_list = [item[0] for item in batch]
     v2_list = [item[1] for item in batch]
@@ -67,7 +67,9 @@ def ssl_collate_fn(batch):
     return v1_padded, v2_padded, lengths
 
 
-def supervised_collate_fn(batch):
+def supervised_collate_fn(
+    batch: list,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Collate function for supervised training.
     Pads sequences to the max length in batch and stacks labels.
@@ -85,7 +87,9 @@ class EarlyStopping:
     Early stopping to terminate training when validation loss stops improving.
     """
 
-    def __init__(self, patience=5, min_delta=0.001, verbose=False):
+    def __init__(
+        self, patience: int = 5, min_delta: float = 0.001, verbose: bool = False
+    ) -> None:
         self.patience = patience
         self.min_delta = min_delta
         self.verbose = verbose
@@ -93,7 +97,7 @@ class EarlyStopping:
         self.best_loss = None
         self.early_stop = False
 
-    def __call__(self, val_loss):
+    def __call__(self, val_loss: float) -> bool:
         if self.best_loss is None:
             self.best_loss = val_loss
             if self.verbose:
@@ -116,10 +120,11 @@ class EarlyStopping:
 
 class MemoryBank(nn.Module):
     """
-    Memory bank for self-supervised learning, allowing for a larger number of negative samples.
+    Memory bank for self-supervised learning, \
+        allowing for a larger number of negative samples.
     """
 
-    def __init__(self, size: int, dim: int):
+    def __init__(self, size: int, dim: int) -> None:
         super().__init__()
         self.size = size
         self.dim = dim
@@ -169,10 +174,8 @@ class MemoryBank(nn.Module):
         return self.size if self.is_full.item() else self.ptr.item()
 
     def __repr__(self) -> str:
-        return (
-            f"MemoryBank(size={self.size}, dim={self.dim}, "
-            f"filled={len(self)}/{self.size})"
-        )
+        return f"MemoryBank(size={self.size}, dim={self.dim}, \
+                    filled={len(self)}/{self.size})"
 
 
 # ==========================================
@@ -185,13 +188,15 @@ class TemporalAttention(nn.Module):
     Temporal attention mechanism to aggregate LSTM/GRU outputs over time.
     """
 
-    def __init__(self, hidden_dim):
+    def __init__(self, hidden_dim: int) -> None:
         super().__init__()
         self.attn = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim), nn.Tanh(), nn.Linear(hidden_dim, 1)
         )
 
-    def forward(self, lstm_outputs, lengths):
+    def forward(
+        self, lstm_outputs: torch.Tensor, lengths: torch.Tensor
+    ) -> torch.Tensor:
         """
         Calculates attention weights and weighted sum of hidden states.
         """
@@ -213,13 +218,16 @@ class TemporalAttention(nn.Module):
 def build_resnet_cnn(input_channels: int) -> tuple[nn.Module, int]:
     """
     Builds a ResNet model that can process images with an arbitrary number of channels.
-    The final fully connected layer is replaced with an identity to extract feature vectors.
+    The final fully connected layer is \
+        replaced with an identity to extract feature vectors.
 
     Args:
-        input_channels (int): Number of input channels (e.g., 3 for RGB, 2 for optical flow).
+        input_channels (int): Number of input \
+            channels (e.g., 3 for RGB, 2 for optical flow).
 
     Returns:
-        tuple[nn.Module, int]: A tuple containing the CNN model and the feature dimension.
+        tuple[nn.Module, int]: A tuple containing the 
+            CNN model and the feature dimension.
     """
     model = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
     if input_channels == 2:
@@ -244,7 +252,7 @@ class TinyMLPEncoder(nn.Module):
     Baseline model using a tiny CNN, frame averaging, and an MLP classifier.
     """
 
-    def __init__(self, hidden_size=64, num_classes=3):
+    def __init__(self, hidden_size: int = 64, num_classes: int = 3) -> None:
         super().__init__()
         # Tiny CNN
         self.image_extractor = nn.Sequential(
@@ -270,7 +278,9 @@ class TinyMLPEncoder(nn.Module):
 
         self.output_dim = hidden_size
 
-    def forward(self, batch_padded: torch.Tensor, lengths: torch.Tensor):
+    def forward(
+        self, batch_padded: torch.Tensor, lengths: torch.Tensor
+    ) -> torch.Tensor:
         """
         Forward pass for supervised classification.
         """
@@ -287,7 +297,9 @@ class TinyMLPEncoder(nn.Module):
         logits = self.classifier(hidden)
         return logits
 
-    def forward_hidden(self, batch_padded: torch.Tensor, lengths: torch.Tensor):
+    def forward_hidden(
+        self, batch_padded: torch.Tensor, lengths: torch.Tensor
+    ) -> torch.Tensor:
         """
         Forward pass for self-supervised learning; returns hidden representations.
         """
@@ -310,8 +322,11 @@ class FastGRU(nn.Module):
     """
 
     def __init__(
-        self, hidden_size=128, num_layers=2, num_classes=3, use_efficient_cnn=True
-    ):
+        self,
+        hidden_size: int = 128,
+        num_layers: int = 2,
+        num_classes: int = 3,
+    ) -> None:
         super().__init__()
 
         self.image_extractor, self.feature_dim = build_resnet_cnn(3)
@@ -328,7 +343,9 @@ class FastGRU(nn.Module):
         self.classifier = nn.Linear(hidden_size, num_classes)
         self.output_dim = hidden_size
 
-    def forward(self, batch_padded: torch.Tensor, lengths: torch.Tensor):
+    def forward(
+        self, batch_padded: torch.Tensor, lengths: torch.Tensor
+    ) -> torch.Tensor:
         """
         Forward pass for supervised classification.
         """
@@ -349,9 +366,12 @@ class FastGRU(nn.Module):
         logits = self.classifier(context)
         return logits
 
-    def forward_hidden(self, batch_padded: torch.Tensor, lengths: torch.Tensor):
+    def forward_hidden(
+        self, batch_padded: torch.Tensor, lengths: torch.Tensor
+    ) -> torch.Tensor:
         """
-        Forward pass for self-supervised learning; returns features before the classifier.
+        Forward pass for self-supervised learning;
+            returns features before the classifier.
         """
         device = batch_padded.device
         B, T, C, H, W = batch_padded.shape
@@ -376,7 +396,9 @@ class FeatureAggregatingLSTM(nn.Module):
     CNN + LSTM: Extract frame features and model temporal dynamics using LSTM.
     """
 
-    def __init__(self, hidden_size=64, num_layers=1, num_classes=3):
+    def __init__(
+        self, hidden_size: int = 64, num_layers: int = 1, num_classes: int = 3
+    ) -> None:
         super().__init__()
         self.image_extractor, self.feature_dim = build_resnet_cnn(3)
         self.lstm = nn.LSTM(
@@ -388,7 +410,9 @@ class FeatureAggregatingLSTM(nn.Module):
         self.num_classes = num_classes
         self.classifier = nn.Linear(hidden_size, num_classes)
 
-    def forward(self, batch_padded: List[torch.Tensor], lengths: torch.Tensor):
+    def forward(
+        self, batch_padded: torch.Tensor | list[torch.Tensor], lengths: torch.Tensor
+    ) -> torch.Tensor:
         """
         Forward pass for supervised classification.
         """
@@ -408,7 +432,9 @@ class FeatureAggregatingLSTM(nn.Module):
         logits = self.classifier(last_hidden)
         return logits
 
-    def forward_hidden(self, batch_padded: List[torch.Tensor], lengths: torch.Tensor):
+    def forward_hidden(
+        self, batch_padded: torch.Tensor | list[torch.Tensor], lengths: torch.Tensor
+    ) -> torch.Tensor:
         """
         Forward pass for self-supervised learning; returns the final LSTM hidden state.
         """
@@ -432,7 +458,9 @@ class SimCLRProjectionWrapper(nn.Module):
     Wrap any encoder with a projection head for SimCLR contrastive learning.
     """
 
-    def __init__(self, encoder: nn.Module, encoder_output_dim: int, projection_dim=256):
+    def __init__(
+        self, encoder: nn.Module, encoder_output_dim: int, projection_dim: int = 256
+    ) -> None:
         super().__init__()
         self.encoder = encoder
 
@@ -442,9 +470,10 @@ class SimCLRProjectionWrapper(nn.Module):
             nn.Linear(encoder_output_dim, projection_dim),
         )
 
-    def forward(self, x, lengths):
+    def forward(self, x: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
         """
-        Extracts hidden features from the encoder and passes them through the projector head.
+        Extracts hidden features from the encoder
+            and passes them through the projector head.
         """
         h = self.encoder.forward_hidden(x, lengths)
         z = self.projector(h)
@@ -507,11 +536,11 @@ class NTXentLoss(nn.Module):
     Normalized Temperature-scaled Cross Entropy loss for contrastive learning.
     """
 
-    def __init__(self, temperature=0.5):
+    def __init__(self, temperature: float = 0.5) -> None:
         super().__init__()
         self.temperature = temperature
 
-    def forward(self, z1, z2):
+    def forward(self, z1: torch.Tensor, z2: torch.Tensor) -> torch.Tensor:
         """
         Calculates loss between two sets of embeddings.
         """
@@ -536,11 +565,13 @@ class NTXentLossWithMemoryBank(nn.Module):
     SimCLR loss extended to use a memory bank for more negative samples.
     """
 
-    def __init__(self, temperature: float = 0.5):
+    def __init__(self, temperature: float = 0.5) -> None:
         super().__init__()
         self.temperature = temperature
 
-    def forward(self, z1: torch.Tensor, z2: torch.Tensor, memory_bank) -> torch.Tensor:
+    def forward(
+        self, z1: torch.Tensor, z2: torch.Tensor, memory_bank: "MemoryBank"
+    ) -> torch.Tensor:
         """
         Calculates loss using in-batch samples and memory bank samples.
         """
@@ -565,7 +596,9 @@ class NTXentLossWithMemoryBank(nn.Module):
         return loss
 
 
-def _build_encoder(args, device):
+def _build_encoder(
+    args: argparse.Namespace, device: torch.device
+) -> tuple[nn.Module, int]:
     """
     Instantiates the chosen encoder model based on command line arguments.
     """
@@ -580,9 +613,12 @@ def _build_encoder(args, device):
     return encoder, encoder_dim
 
 
-def _build_optimizer(model, args):
+def _build_optimizer(
+    model: nn.Module, args: argparse.Namespace
+) -> torch.optim.Optimizer:
     """
-    Builds the Adam optimizer for the model, with specific LR settings for GRU components.
+    Builds the Adam optimizer for the model, with
+        specific LR settings for GRU components.
     """
     if args.encoder == "fast_gru":
         return torch.optim.Adam(
@@ -597,7 +633,9 @@ def _build_optimizer(model, args):
         return torch.optim.Adam(model.parameters(), lr=1e-4)
 
 
-def train_ssl(args, device, img_dir, weights_dir):
+def train_ssl(
+    args: argparse.Namespace, device: torch.device, img_dir: Path, weights_dir: Path
+) -> None:
     """
     Main loop for self-supervised pre-training using SimCLR.
     """
@@ -709,7 +747,14 @@ def train_ssl(args, device, img_dir, weights_dir):
     print(f"SSL Backbone saved to {save_path}")
 
 
-def train_supervised(args, device, img_dir, csv_file, weights_dir, logs_dir):
+def train_supervised(
+    args: argparse.Namespace,
+    device: torch.device,
+    img_dir: Path,
+    csv_file: Path,
+    weights_dir: Path,
+    logs_dir: Path,
+) -> None:
     """
     Main loop for supervised training and evaluation.
     """
