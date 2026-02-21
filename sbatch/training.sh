@@ -16,9 +16,13 @@ cd $SLURM_SUBMIT_DIR
 
 # -u to disable stdout buffering
 python3 -u training/train.py \
+    --mode ssl \
+    --encoder fast_gru \
+    --temperature 0.2 \
     --epochs 50 \
-    --batch-size 2 \
-    --use-augmentation \
+    --batch-size 64 \
+    --frame-skip 30 \
+    --subset 9000 \
     >logs/training_${SLURM_JOBID}.log \
     2>logs/training_${SLURM_JOBID}.err
 
