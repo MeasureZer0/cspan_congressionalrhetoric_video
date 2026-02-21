@@ -65,14 +65,14 @@ cd video
 It is a good practice to use a virtual environment. You can create one using:
 
 ```bash
-python -m venv .venv
+uv venv
 source .venv/bin/activate  # On Windows use `.venv\Scripts\activate`
 ```
 
 Then install the required packages:
 
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
 
 Then run the scripts:
