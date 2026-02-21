@@ -21,12 +21,18 @@ from torchvision.models import ResNet18_Weights, resnet18
 from tqdm import tqdm
 from transforms import VideoSimCLRTransform
 
+"""
+Training script for self-supervised (SimCLR) and supervised learning
+on face tensor sequences extracted from videos.
+"""
+
 # ==========================================
 # Utility
 # ==========================================
 
 
 def set_seed(seed=42):
+    """Sets the seed for reproducibility across random, numpy, and torch."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -47,6 +53,10 @@ def _default_paths() -> tuple[Path, Path, Path, Path]:
 
 
 def ssl_collate_fn(batch):
+    """
+    Collate function for SimCLR SSL training.
+    Pairs two augmented views of the same video and pads them to the max length in batch.
+    """
     v1_list = [item[0] for item in batch]
     v2_list = [item[1] for item in batch]
     lengths = torch.tensor([v.shape[0] for v in v1_list], dtype=torch.long)
@@ -58,6 +68,10 @@ def ssl_collate_fn(batch):
 
 
 def supervised_collate_fn(batch):
+    """
+    Collate function for supervised training.
+    Pads sequences to the max length in batch and stacks labels.
+    """
     faces_list = [item[0] for item in batch]
     labels = torch.stack([item[1] for item in batch])
     lengths = torch.tensor([f.shape[0] for f in faces_list], dtype=torch.long)
@@ -67,6 +81,10 @@ def supervised_collate_fn(batch):
 
 
 class EarlyStopping:
+    """
+    Early stopping to terminate training when validation loss stops improving.
+    """
+
     def __init__(self, patience=5, min_delta=0.001, verbose=False):
         self.patience = patience
         self.min_delta = min_delta
@@ -97,6 +115,10 @@ class EarlyStopping:
 
 
 class MemoryBank(nn.Module):
+    """
+    Memory bank for self-supervised learning, allowing for a larger number of negative samples.
+    """
+
     def __init__(self, size: int, dim: int):
         super().__init__()
         self.size = size
@@ -110,6 +132,9 @@ class MemoryBank(nn.Module):
 
     @torch.no_grad()
     def enqueue(self, z: torch.Tensor) -> None:
+        """
+        Adds new embeddings to the bank, replacing the oldest ones.
+        """
         z = F.normalize(z.detach(), dim=1)
 
         batch_size = z.shape[0]
@@ -133,6 +158,9 @@ class MemoryBank(nn.Module):
             self.is_full[0] = True
 
     def get(self) -> torch.Tensor:
+        """
+        Returns all valid embeddings currently stored in the bank.
+        """
         if self.is_full.item():
             return self.bank.clone()
         return self.bank[: self.ptr.item()].clone()
@@ -153,6 +181,10 @@ class MemoryBank(nn.Module):
 
 
 class TemporalAttention(nn.Module):
+    """
+    Temporal attention mechanism to aggregate LSTM/GRU outputs over time.
+    """
+
     def __init__(self, hidden_dim):
         super().__init__()
         self.attn = nn.Sequential(
@@ -160,6 +192,9 @@ class TemporalAttention(nn.Module):
         )
 
     def forward(self, lstm_outputs, lengths):
+        """
+        Calculates attention weights and weighted sum of hidden states.
+        """
         scores = self.attn(lstm_outputs).squeeze(-1)  # [B, T]
 
         max_len = scores.size(1)
@@ -178,15 +213,13 @@ class TemporalAttention(nn.Module):
 def build_resnet_cnn(input_channels: int) -> tuple[nn.Module, int]:
     """
     Builds a ResNet model that can process images with an arbitrary number of channels.
-    The final fully connected layer is replaced with an identity to \
-        extract feature vectors.
+    The final fully connected layer is replaced with an identity to extract feature vectors.
 
     Args:
-        input_channels: number of input channels (e.g., 3 for RGB, 2 for optical flow)
+        input_channels (int): Number of input channels (e.g., 3 for RGB, 2 for optical flow).
 
     Returns:
-        model: CNN feature extractor
-        feature_size: dimensionality of the extracted feature vector
+        tuple[nn.Module, int]: A tuple containing the CNN model and the feature dimension.
     """
     model = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
     if input_channels == 2:
@@ -208,7 +241,7 @@ def build_resnet_cnn(input_channels: int) -> tuple[nn.Module, int]:
 
 class TinyMLPEncoder(nn.Module):
     """
-    Baseline: Tiny CNN + frame averaging + MLP
+    Baseline model using a tiny CNN, frame averaging, and an MLP classifier.
     """
 
     def __init__(self, hidden_size=64, num_classes=3):
@@ -238,6 +271,9 @@ class TinyMLPEncoder(nn.Module):
         self.output_dim = hidden_size
 
     def forward(self, batch_padded: torch.Tensor, lengths: torch.Tensor):
+        """
+        Forward pass for supervised classification.
+        """
         device = batch_padded.device
 
         padded = pad_sequence(batch_padded, batch_first=True)
@@ -252,7 +288,9 @@ class TinyMLPEncoder(nn.Module):
         return logits
 
     def forward_hidden(self, batch_padded: torch.Tensor, lengths: torch.Tensor):
-        """Forward for SSL: returns hidden representation without classifier."""
+        """
+        Forward pass for self-supervised learning; returns hidden representations.
+        """
         device = batch_padded.device
 
         padded = pad_sequence(batch_padded, batch_first=True)
@@ -267,6 +305,10 @@ class TinyMLPEncoder(nn.Module):
 
 
 class FastGRU(nn.Module):
+    """
+    Sequential model with a ResNet backbone, GRU, and temporal attention.
+    """
+
     def __init__(
         self, hidden_size=128, num_layers=2, num_classes=3, use_efficient_cnn=True
     ):
@@ -287,6 +329,9 @@ class FastGRU(nn.Module):
         self.output_dim = hidden_size
 
     def forward(self, batch_padded: torch.Tensor, lengths: torch.Tensor):
+        """
+        Forward pass for supervised classification.
+        """
         device = batch_padded.device
         B, T, C, H, W = batch_padded.shape
 
@@ -305,6 +350,9 @@ class FastGRU(nn.Module):
         return logits
 
     def forward_hidden(self, batch_padded: torch.Tensor, lengths: torch.Tensor):
+        """
+        Forward pass for self-supervised learning; returns features before the classifier.
+        """
         device = batch_padded.device
         B, T, C, H, W = batch_padded.shape
 
@@ -325,7 +373,7 @@ class FastGRU(nn.Module):
 
 class FeatureAggregatingLSTM(nn.Module):
     """
-    CNN + LSTM: Extract frame features and model temporal dynamics.
+    CNN + LSTM: Extract frame features and model temporal dynamics using LSTM.
     """
 
     def __init__(self, hidden_size=64, num_layers=1, num_classes=3):
@@ -342,7 +390,7 @@ class FeatureAggregatingLSTM(nn.Module):
 
     def forward(self, batch_padded: List[torch.Tensor], lengths: torch.Tensor):
         """
-        Standard forward for supervised training: returns logits.
+        Forward pass for supervised classification.
         """
         device = batch_padded.device
         B, T, C, H, W = batch_padded.shape
@@ -362,7 +410,7 @@ class FeatureAggregatingLSTM(nn.Module):
 
     def forward_hidden(self, batch_padded: List[torch.Tensor], lengths: torch.Tensor):
         """
-        Forward for SSL: returns LSTM hidden state without classifier.
+        Forward pass for self-supervised learning; returns the final LSTM hidden state.
         """
         device = batch_padded.device
         B, T, C, H, W = batch_padded.shape
@@ -380,7 +428,9 @@ class FeatureAggregatingLSTM(nn.Module):
 
 
 class SimCLRProjectionWrapper(nn.Module):
-    """Wrap any encoder with a projection head for SimCLR."""
+    """
+    Wrap any encoder with a projection head for SimCLR contrastive learning.
+    """
 
     def __init__(self, encoder: nn.Module, encoder_output_dim: int, projection_dim=256):
         super().__init__()
@@ -393,6 +443,9 @@ class SimCLRProjectionWrapper(nn.Module):
         )
 
     def forward(self, x, lengths):
+        """
+        Extracts hidden features from the encoder and passes them through the projector head.
+        """
         h = self.encoder.forward_hidden(x, lengths)
         z = self.projector(h)
         return z
@@ -416,9 +469,7 @@ def stratified_split(
             in our case (0.8, 0.1, 0.1)
 
     Returns:
-        train: List of indices for training
-        val: List of indices for validation
-        test: List of indices for testing
+        tuple: (train_indices, val_indices, test_indices)
     """
     indices = (
         [],  # negative
@@ -452,11 +503,18 @@ def stratified_split(
 
 
 class NTXentLoss(nn.Module):
+    """
+    Normalized Temperature-scaled Cross Entropy loss for contrastive learning.
+    """
+
     def __init__(self, temperature=0.5):
         super().__init__()
         self.temperature = temperature
 
     def forward(self, z1, z2):
+        """
+        Calculates loss between two sets of embeddings.
+        """
         batch_size = z1.size(0)
         z1 = F.normalize(z1.float(), dim=1)
         z2 = F.normalize(z2.float(), dim=1)
@@ -474,11 +532,18 @@ class NTXentLoss(nn.Module):
 
 
 class NTXentLossWithMemoryBank(nn.Module):
+    """
+    SimCLR loss extended to use a memory bank for more negative samples.
+    """
+
     def __init__(self, temperature: float = 0.5):
         super().__init__()
         self.temperature = temperature
 
     def forward(self, z1: torch.Tensor, z2: torch.Tensor, memory_bank) -> torch.Tensor:
+        """
+        Calculates loss using in-batch samples and memory bank samples.
+        """
         B = z1.size(0)
         z1 = F.normalize(z1.float(), dim=1)
         z2 = F.normalize(z2.float(), dim=1)
@@ -501,6 +566,9 @@ class NTXentLossWithMemoryBank(nn.Module):
 
 
 def _build_encoder(args, device):
+    """
+    Instantiates the chosen encoder model based on command line arguments.
+    """
     if args.encoder == "baseline":
         encoder = TinyMLPEncoder(hidden_size=64).to(device)
         encoder_dim = 64
@@ -513,6 +581,9 @@ def _build_encoder(args, device):
 
 
 def _build_optimizer(model, args):
+    """
+    Builds the Adam optimizer for the model, with specific LR settings for GRU components.
+    """
     if args.encoder == "fast_gru":
         return torch.optim.Adam(
             [
@@ -527,6 +598,9 @@ def _build_optimizer(model, args):
 
 
 def train_ssl(args, device, img_dir, weights_dir):
+    """
+    Main loop for self-supervised pre-training using SimCLR.
+    """
     print(f"--- STARTING SSL PRETRAINING (SimCLR) with {args.encoder} ---")
     base_ds = FacesFramesSSLDataset(img_dir)
 
@@ -636,6 +710,9 @@ def train_ssl(args, device, img_dir, weights_dir):
 
 
 def train_supervised(args, device, img_dir, csv_file, weights_dir, logs_dir):
+    """
+    Main loop for supervised training and evaluation.
+    """
     print(f"--- STARTING SUPERVISED TRAINING with {args.encoder} ---")
 
     full_ds = FacesFramesSupervisedDataset(csv_file, img_dir)

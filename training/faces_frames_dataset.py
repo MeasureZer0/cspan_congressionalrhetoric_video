@@ -5,6 +5,11 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
+"""
+PyTorch Datasets for loading and processing face tensor sequences
+stored in .pt files, supporting both SSL and supervised tasks.
+"""
+
 
 class FacesFramesSSLDataset(Dataset):
     """
@@ -42,6 +47,18 @@ class FacesFramesSSLDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
+        """
+        Loads a single face tensor sequence from disk.
+
+        If the sequence is too long, it is truncated.
+        If it is too short, it is padded by repeating frames.
+
+        Args:
+            idx (int): Sample index.
+
+        Returns:
+            torch.Tensor: Face tensor sequence of shape [T, C, H, W].
+        """
         stem = self.samples[idx]
         face_path = self.img_dir / f"{stem}_faces.pt"
 
@@ -116,7 +133,7 @@ class FacesFramesSupervisedDataset(Dataset):
             idx (int): Sample index.
 
         Returns:
-            tuple[Tensor, Tensor, Tensor]: faces, flows and label tensor.
+            tuple[torch.Tensor, torch.Tensor]: A tuple of (faces, label).
         """
         stem, label_str = self.samples[idx]
 

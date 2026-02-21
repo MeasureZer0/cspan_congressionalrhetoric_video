@@ -4,6 +4,11 @@ import torch
 import torchvision.transforms.functional as F
 from torchvision.transforms import RandomResizedCrop
 
+"""
+Augmentation transforms for video sequences, primarily for SimCLR-based
+self-supervised learning.
+"""
+
 
 class VideoSimCLRTransform:
     """
@@ -27,7 +32,9 @@ class VideoSimCLRTransform:
         self.blur_kernel = blur_kernel or max(3, int(size * 0.1) | 1)
 
     def get_jitter_params(self, brightness, contrast, saturation, hue):
-        # Losujemy parametry jittera RAZ dla całego wideo
+        """
+        Samples color jitter parameters once for the entire video sequence.
+        """
         b = random.uniform(max(0, 1 - brightness), 1 + brightness)
         c = random.uniform(max(0, 1 - contrast), 1 + contrast)
         s = random.uniform(max(0, 1 - saturation), 1 + saturation)
