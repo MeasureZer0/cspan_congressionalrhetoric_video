@@ -147,3 +147,4 @@ chmod +x scripts/pip-uninstall.py
 - [YuNet model from OpenCV](https://github.com/opencv/opencv_zoo/blob/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx)
 - Karen Simonyan, Andrew Zisserman, __Two-Stream Convolutional Networks for Action Recognition in Videos__, [https://arxiv.org/pdf/1406.2199](https://arxiv.org/pdf/1406.2199), 2014.
 - Joe Yue-Hei Ng, Matthew Hausknecht, Sudheendra Vijayanarasimhan, Rajat Monga, Oriol Vinyals, George Toderici, __Beyond Short Snippets: Deep Networks for Video Classification__, [https://arxiv.org/pdf/1503.08909](https://arxiv.org/pdf/1503.08909), 2015.
+- Ting Chen, Simon Kornblith, Mohammad Norouzi, Geoffrey Hinton, __A Simple Framework for Contrastive Learning of Visual Representations__, [https://arxiv.org/pdf/2002.05709](https://arxiv.org/pdf/2002.05709), 2020.
