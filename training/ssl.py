@@ -81,7 +81,9 @@ def train_ssl(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=1e-6
     )
-    print(f"Batch size: {args.batch_size} | Initial LR: 1e-4")
+    print(
+        f"Batch size: {args.batch_size} | Initial LR: {optimizer.param_groups[0]['lr']}"
+    )
 
     for epoch in range(args.epochs):
         model.train()
@@ -128,6 +130,13 @@ def train_ssl(
         )
         scheduler.step()
 
-    save_path = weights_dir / f"ssl_backbone_{args.encoder}.pt"
+    save_path = (
+        weights_dir
+        / f"ssl_backbone_\
+            {args.encoder}_\
+                {args.batch_size}_\
+                    {args.use_memory_bank}_\
+                        {args.temperature}.pt"
+    )
     torch.save(encoder.state_dict(), save_path)
     print(f"SSL Backbone saved to {save_path}")

@@ -89,7 +89,7 @@ def train_supervised(
     best_val_acc = 0.0
     best_model_path = (
         weights_dir
-        / f"best_{args.encoder}_supervised_{date.today().strftime('%Y%m%d')}.pt"
+        / f"best_{args.encoder}_supervised_{date.today().strftime('%Y%m%d_%H%M%S')}.pt"
     )
 
     logs_dir.mkdir(parents=True, exist_ok=True)
