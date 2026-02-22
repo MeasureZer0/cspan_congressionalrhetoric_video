@@ -21,4 +21,4 @@ jobs:
                   python-version: ${{ matrix.python-version }}
             # Update output format to enable automatic inline annotations.
             - name: Ruff check
-              run: ruff check --output-format=github .
+              run: uv run ruff check --output-format=github .
