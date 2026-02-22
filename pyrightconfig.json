@@ -4,5 +4,5 @@
     "venvPath": "./.venv",
     "typeCheckingMode": "standard",
     "include": ["preprocessing/", "training/", "utils/", "visualization/"],
-    "exclude": ["**/__pycache__", ".*"]
+    "exclude": ["**/__pycache__", ".*", "**/.ipynb_checkpoints**"]
 }
