@@ -24,9 +24,9 @@ def build_optimizer(
         classifier = getattr(model, "classifier", None)
         return torch.optim.Adam(
             [
-                {"params": encoder.image_extractor.parameters(), "lr": 1e-3},
-                {"params": encoder.gru.parameters(), "lr": 1e-3},
-                {"params": encoder.attention.parameters(), "lr": 1e-3},
+                {"params": encoder.image_extractor.parameters(), "lr": 1e-5},
+                {"params": encoder.gru.parameters(), "lr": 1e-5},
+                {"params": encoder.attention.parameters(), "lr": 1e-4},
                 {
                     "params": classifier.parameters()
                     if isinstance(classifier, nn.Module)
