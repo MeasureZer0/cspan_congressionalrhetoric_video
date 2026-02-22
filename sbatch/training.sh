@@ -13,9 +13,10 @@ module load tdm
 module load python/seminar r/seminar
 
 cd $SLURM_SUBMIT_DIR
+source .venv/bin/activate
 
 # -u to disable stdout buffering
-python3 -u training/train.py \
+python3 -u -m training.train \
     --mode ssl \
     --encoder fast_gru \
     --temperature 0.2 \
