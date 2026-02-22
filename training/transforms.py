@@ -59,7 +59,7 @@ class VideoSimCLRTransform:
         # Random Resized Crop
         i, j, h, w = RandomResizedCrop(
             size=self.size, ratio=(3.0 / 4.0, 4.0 / 3.0)
-        ).get_params(video[0], scale=(0.08, 1.0), ratio=(3.0 / 4.0, 4.0 / 3.0))
+        ).get_params(video[0], scale=[0.08, 1.0], ratio=[3.0 / 4.0, 4.0 / 3.0])
         video = F.resized_crop(video, i, j, h, w, [self.size, self.size])
 
         # Horizontal Flip

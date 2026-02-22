@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 
@@ -7,6 +8,10 @@ class MemoryBank(nn.Module):
     Memory bank for self-supervised learning, \
         allowing for a larger number of negative samples.
     """
+
+    bank: torch.Tensor
+    ptr: torch.Tensor
+    is_full: torch.Tensor
 
     def __init__(self, size: int, dim: int) -> None:
         super().__init__()
@@ -26,8 +31,8 @@ class MemoryBank(nn.Module):
         """
         z = F.normalize(z.detach(), dim=1)
 
-        batch_size = z.shape[0]
-        ptr = self.ptr.item()
+        batch_size = int(z.shape[0])
+        ptr = int(self.ptr[0])
 
         if batch_size > self.size:
             z = z[-self.size :]
@@ -50,12 +55,12 @@ class MemoryBank(nn.Module):
         """
         Returns all valid embeddings currently stored in the bank.
         """
-        if self.is_full.item():
+        if bool(self.is_full[0]):
             return self.bank.clone()
-        return self.bank[: self.ptr.item()].clone()
+        return self.bank[: int(self.ptr[0])].clone()
 
     def __len__(self) -> int:
-        return self.size if self.is_full.item() else self.ptr.item()
+        return self.size if bool(self.is_full[0]) else int(self.ptr[0])
 
     def __repr__(self) -> str:
         return f"MemoryBank(size={self.size}, dim={self.dim}, \

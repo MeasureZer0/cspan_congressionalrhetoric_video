@@ -5,14 +5,14 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from faces_frames_dataset import FacesFramesSupervisedDataset
 from sklearn.metrics import confusion_matrix, f1_score
 from torch import nn
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
-from .encoder import _build_encoder
-from .optimizer import _build_optimizer
+from .encoder import build_encoder
+from .faces_frames_dataset import FacesFramesSupervisedDataset
+from .optimizer import build_optimizer
 from .utils import EarlyStopping, stratified_split, supervised_collate_fn
 
 
@@ -62,7 +62,7 @@ def train_supervised(
         persistent_workers=True if args.num_workers > 0 else False,
     )
 
-    model, _ = _build_encoder(args, device)
+    model, _ = build_encoder(args, device)
 
     if args.load_ssl:
         ssl_path = weights_dir / f"ssl_backbone_{args.encoder}.pt"
@@ -74,9 +74,9 @@ def train_supervised(
         else:
             print(f"Warning: SSL weights not found at {ssl_path}")
 
-    optimizer = _build_optimizer(model, args)
+    optimizer = build_optimizer(model, args)
 
-    class_counts = np.bincount([label for _, label in full_ds])
+    class_counts = np.bincount([int(label.item()) for _, label in full_ds])
     weights = 1.0 / torch.tensor(class_counts, dtype=torch.float)
     weights = weights / weights.sum()
     criterion = nn.CrossEntropyLoss(weight=weights.to(device))

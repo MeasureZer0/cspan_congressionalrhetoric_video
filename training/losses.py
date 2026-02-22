@@ -2,6 +2,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from .memory_bank import MemoryBank
+
 
 class NTXentLoss(nn.Module):
     """
@@ -42,7 +44,7 @@ class NTXentLossWithMemoryBank(nn.Module):
         self.temperature = temperature
 
     def forward(
-        self, z1: torch.Tensor, z2: torch.Tensor, memory_bank: "MemoryBank"
+        self, z1: torch.Tensor, z2: torch.Tensor, memory_bank: MemoryBank
     ) -> torch.Tensor:
         """
         Calculates loss using in-batch samples and memory bank samples.

@@ -1,7 +1,15 @@
+from typing import Protocol, cast
+
 import torch
 from torch import nn
-from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence, pad_sequence
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from torchvision.models import ResNet18_Weights, resnet18
+
+
+class _SupportsForwardHidden(Protocol):
+    def forward_hidden(
+        self, x: torch.Tensor, lengths: torch.Tensor
+    ) -> torch.Tensor: ...
 
 
 class TemporalAttention(nn.Module):
@@ -38,14 +46,17 @@ class TemporalAttention(nn.Module):
 
 def build_resnet_cnn(input_channels: int) -> tuple[nn.Module, int]:
     """
-    Builds a ResNet model that can process images with an arbitrary number of channels.
-    The final fully connected layer is replaced with an identity to extract feature vectors.
+    Builds a ResNet model that can process images with an arbitrary number of
+    channels. The final fully connected layer is replaced with an identity to
+    extract feature vectors.
 
     Args:
-        input_channels (int): Number of input channels (e.g., 3 for RGB, 2 for optical flow).
+        input_channels (int): Number of input channels (e.g., 3 for RGB, 2 for
+        optical flow).
 
     Returns:
-        tuple[nn.Module, int]: A tuple containing the CNN model and the feature dimension.
+        tuple[nn.Module, int]: A tuple containing the CNN model and the feature
+        dimension.
     """
     model = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
     if input_channels == 2:
@@ -54,7 +65,7 @@ def build_resnet_cnn(input_channels: int) -> tuple[nn.Module, int]:
         )
 
     feature_size = model.fc.in_features
-    model.fc = nn.Identity()
+    model.fc = nn.Identity()  # type: ignore
 
     for name, param in model.named_parameters():
         if "layer4" in name:
@@ -96,18 +107,13 @@ class TinyMLPEncoder(nn.Module):
 
         self.output_dim = hidden_size
 
-    def forward(
-        self, batch_padded: torch.Tensor, lengths: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, batch_padded: torch.Tensor, _: torch.Tensor) -> torch.Tensor:
         """
         Forward pass for supervised classification.
         """
         device = batch_padded.device
-
-        padded = pad_sequence(batch_padded, batch_first=True)
-
-        B, T, C, H, W = padded.shape
-        flat = padded.view(B * T, C, H, W).to(device)
+        B, T, C, H, W = batch_padded.shape
+        flat = batch_padded.view(B * T, C, H, W).to(device)
         feats = self.image_extractor(flat).view(B, T, -1)
         avg_feats = feats.mean(dim=1)
 
@@ -116,17 +122,14 @@ class TinyMLPEncoder(nn.Module):
         return logits
 
     def forward_hidden(
-        self, batch_padded: torch.Tensor, lengths: torch.Tensor
+        self, batch_padded: torch.Tensor, _: torch.Tensor
     ) -> torch.Tensor:
         """
         Forward pass for self-supervised learning; returns hidden representations.
         """
         device = batch_padded.device
-
-        padded = pad_sequence(batch_padded, batch_first=True)
-
-        B, T, C, H, W = padded.shape
-        flat = padded.view(B * T, C, H, W).to(device)
+        B, T, C, H, W = batch_padded.shape
+        flat = batch_padded.view(B * T, C, H, W).to(device)
         feats = self.image_extractor(flat).view(B, T, -1)
         avg_feats = feats.mean(dim=1)
 
@@ -229,7 +232,7 @@ class FeatureAggregatingLSTM(nn.Module):
         self.classifier = nn.Linear(hidden_size, num_classes)
 
     def forward(
-        self, batch_padded: torch.Tensor | list[torch.Tensor], lengths: torch.Tensor
+        self, batch_padded: torch.Tensor, lengths: torch.Tensor
     ) -> torch.Tensor:
         """
         Forward pass for supervised classification.
@@ -251,7 +254,7 @@ class FeatureAggregatingLSTM(nn.Module):
         return logits
 
     def forward_hidden(
-        self, batch_padded: torch.Tensor | list[torch.Tensor], lengths: torch.Tensor
+        self, batch_padded: torch.Tensor, lengths: torch.Tensor
     ) -> torch.Tensor:
         """
         Forward pass for self-supervised learning; returns the final LSTM hidden state.
@@ -293,6 +296,7 @@ class SimCLRProjectionWrapper(nn.Module):
         Extracts hidden features from the encoder
             and passes them through the projector head.
         """
-        h = self.encoder.forward_hidden(x, lengths)
+        encoder = cast(_SupportsForwardHidden, self.encoder)
+        h = encoder.forward_hidden(x, lengths)
         z = self.projector(h)
         return z

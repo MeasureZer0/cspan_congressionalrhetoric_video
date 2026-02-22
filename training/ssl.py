@@ -3,15 +3,16 @@ import random
 from pathlib import Path
 
 import torch
-from faces_frames_dataset import FacesFramesSSLDataset, SimCLRDataset
-from losses import NTXentLoss, NTXentLossWithMemoryBank
-from memory_bank import MemoryBank
-from models import SimCLRProjectionWrapper
+from torch import nn
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
-from transforms import VideoSimCLRTransform
 
-from .encoder import _build_encoder
+from .encoder import build_encoder
+from .faces_frames_dataset import FacesFramesSSLDataset, SimCLRDataset
+from .losses import NTXentLoss, NTXentLossWithMemoryBank
+from .memory_bank import MemoryBank
+from .models import SimCLRProjectionWrapper
+from .transforms import VideoSimCLRTransform
 from .utils import ssl_collate_fn
 
 
@@ -42,7 +43,7 @@ def train_ssl(
         persistent_workers=True if args.num_workers > 0 else False,
     )
 
-    encoder, encoder_dim = _build_encoder(args, device)
+    encoder, encoder_dim = build_encoder(args, device)
     projection_dim = 256
 
     if args.encoder == "fast_gru":
@@ -55,13 +56,14 @@ def train_ssl(
     model = SimCLRProjectionWrapper(
         encoder, encoder_output_dim=encoder_dim, projection_dim=projection_dim
     ).to(device)
-    optimizer = torch.optim.Adam(
-        [
-            {"params": encoder.image_extractor.parameters(), "lr": 1e-5},
-            {"params": encoder.gru.parameters(), "lr": 1e-4},
-            {"params": model.projector.parameters(), "lr": 1e-4},
-        ]
-    )
+    optimizer_param_groups: list[dict[str, object]] = [
+        {"params": encoder.image_extractor.parameters(), "lr": 1e-5},
+        {"params": model.projector.parameters(), "lr": 1e-4},
+    ]
+    gru = getattr(encoder, "gru", None)
+    if isinstance(gru, nn.Module):
+        optimizer_param_groups.append({"params": gru.parameters(), "lr": 1e-4})
+    optimizer = torch.optim.Adam(optimizer_param_groups)
 
     if args.use_memory_bank:
         memory_bank = MemoryBank(size=args.bank_size, dim=projection_dim).to(device)
@@ -94,6 +96,7 @@ def train_ssl(
             optimizer.zero_grad()
 
             if args.use_memory_bank:
+                assert memory_bank is not None
                 z1 = model(v1, lengths)
                 z2 = model(v2, lengths)
                 loss = criterion(z1, z2, memory_bank)
@@ -113,8 +116,9 @@ def train_ssl(
             num_batches += 1
             postfix = {"loss": f"{loss.item():.4f}"}
             if args.use_memory_bank:
+                assert memory_bank is not None
                 postfix["bank"] = f"{len(memory_bank)}/{args.bank_size}"
-            pbar.set_postfix(**postfix)
+            pbar.set_postfix(postfix)
 
         avg_loss = epoch_loss / num_batches
         current_lr = optimizer.param_groups[0]["lr"]

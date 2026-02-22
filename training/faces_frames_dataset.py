@@ -1,10 +1,10 @@
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Subset
 
 """
 PyTorch Datasets for loading and processing face tensor sequences
@@ -155,7 +155,11 @@ class SimCLRDataset(Dataset):
     of the same sample: (view1, view2).
     """
 
-    def __init__(self, base_dataset: Dataset, transform: Any) -> None:  # noqa: ANN401
+    def __init__(
+        self,
+        base_dataset: FacesFramesSSLDataset | Subset[torch.Tensor],
+        transform: Callable[[torch.Tensor], torch.Tensor],
+    ) -> None:
         """
         Args:
             base_dataset (Dataset): Dataset returning tensors without labels.

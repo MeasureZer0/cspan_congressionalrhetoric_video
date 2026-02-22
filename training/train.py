@@ -4,7 +4,7 @@ import torch
 
 from .ssl import train_ssl
 from .supervised import train_supervised
-from .utils import _default_paths, set_seed
+from .utils import default_paths, set_seed
 
 """
 Training script for self-supervised (SimCLR) and supervised learning
@@ -44,7 +44,7 @@ if __name__ == "__main__":
             f"Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB"
         )
 
-    img_dir, csv_file, weights_dir, logs_dir = _default_paths()
+    img_dir, csv_file, weights_dir, logs_dir = default_paths()
     weights_dir.mkdir(parents=True, exist_ok=True)
 
     if args.mode == "ssl":

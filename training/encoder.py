@@ -1,13 +1,13 @@
 import argparse
 
 import torch
-from models import FastGRU, TinyMLPEncoder
-from torch import nn
+
+from .models import FastGRU, TinyMLPEncoder
 
 
-def _build_encoder(
+def build_encoder(
     args: argparse.Namespace, device: torch.device
-) -> tuple[nn.Module, int]:
+) -> tuple[TinyMLPEncoder | FastGRU, int]:
     """
     Instantiates the chosen encoder model based on command line arguments.
     """

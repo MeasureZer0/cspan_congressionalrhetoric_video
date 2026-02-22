@@ -3,8 +3,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from faces_frames_dataset import FacesFramesSupervisedDataset
 from torch.nn.utils.rnn import pad_sequence
+
+from .faces_frames_dataset import FacesFramesSupervisedDataset
 
 
 def set_seed(seed: int = 42) -> None:
@@ -16,7 +17,7 @@ def set_seed(seed: int = 42) -> None:
     torch.backends.cudnn.deterministic = True
 
 
-def _default_paths() -> tuple[Path, Path, Path, Path]:
+def default_paths() -> tuple[Path, Path, Path, Path]:
     """Return default (img_dir, csv_file, weights_dir, logs_dir) paths."""
     script_dir = Path(__file__).resolve().parent
     project_root = script_dir.parent
@@ -28,7 +29,9 @@ def _default_paths() -> tuple[Path, Path, Path, Path]:
     return img_dir, csv_file, weights_dir, logs_dir
 
 
-def ssl_collate_fn(batch: list) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def ssl_collate_fn(
+    batch: list[tuple[torch.Tensor, torch.Tensor]],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Collate function for SimCLR SSL training.
     Pairs two augmented views of the same video and pads
@@ -45,7 +48,7 @@ def ssl_collate_fn(batch: list) -> tuple[torch.Tensor, torch.Tensor, torch.Tenso
 
 
 def supervised_collate_fn(
-    batch: list,
+    batch: list[tuple[torch.Tensor, torch.Tensor]],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Collate function for supervised training.
@@ -117,8 +120,8 @@ def stratified_split(
     )
     for i in range(len(dataset)):
         _, label = dataset[i]
-        if label is not None:
-            indices[label].append(i)
+        label_idx = int(label.item())
+        indices[label_idx].append(i)
 
     train_indices, val_indices, test_indices = [], [], []
     cumulative_fractions = [fractions[0], fractions[0] + fractions[1]]
