@@ -5,16 +5,12 @@ on: [push]
 jobs:
     ruff-check:
         runs-on: ubuntu-latest
-        strategy:
-            matrix:
-                python-version: ["3.13"]
 
         steps:
             - uses: actions/checkout@v4
-            - name: Setup Python ${{ matrix.python-version }} with uv
-              uses: ./.github/actions/setup-python-with-uv
+            - name: Setup Ruff
+              uses: astral-sh/ruff-action@v3
               with:
-                  python-version: ${{ matrix.python-version }}
-            # Update output format to enable automatic inline annotations.
+                  version: "0.15.0"
             - name: Ruff check
-              run: uv run ruff check --output-format=github .
+              run: ruff check --output-format=github .
