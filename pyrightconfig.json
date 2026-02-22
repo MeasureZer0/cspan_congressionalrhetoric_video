@@ -1,0 +1,8 @@
+{
+    "pythonVersion": "3.13",
+    "pythonPlatform": "All",
+    "venvPath": "./.venv",
+    "typeCheckingMode": "standard",
+    "include": ["preprocessing/", "training/", "utils/", "visualization/"],
+    "exclude": ["**/__pycache__", ".*"]
+}
