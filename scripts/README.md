@@ -76,7 +76,6 @@ python scripts/label-videos.py FOLDER [options]
 Common options:
 
 - `--csv <path>`: output CSV path (default: `labels.csv`)
-- `--fps <float>`: maximum display FPS cap (default: `30.0`)
 - `--width <int>`: display width in pixels (default: `960`)
 
 Notes:
@@ -86,4 +85,8 @@ Notes:
 - Output CSV format is `"filename","label"` (quoted 2-column CSV).
 - `Back` returns to the previous video index so you can relabel it.
 - Keyboard shortcuts: `p` positive, `u` neutral, `n` negative, `s` skip, `b` back, `q` quit, `Space` pause/resume.
+- On macOS, videos open in QuickTime Player (external window) instead of embedded VLC.
+- On Windows, videos open in the default system video player (external window).
+- In external-player mode, `Space` pause/resume is not controlled by this script.
+- On Linux, playback remains embedded via VLC and requires VLC + `python-vlc`.
 - Requires Tkinter (`tk`). On macOS with Homebrew Python, install Tk support if needed.

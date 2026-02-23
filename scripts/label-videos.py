@@ -29,7 +29,7 @@ IS_LINUX = sys.platform.startswith("linux")
 
 
 # Minimal copy of the tkvlc macOS helper: VLC needs an NSView, not the raw Tk id.
-def _build_nsview_getter():
+def _build_nsview_getter() -> Any:  # noqa: ANN401
     if not IS_MAC:
         return lambda _widget_id: None
 
@@ -120,7 +120,7 @@ def write_labels(csv_path: Path, labels: Dict[str, Tuple[str, str]]) -> None:
 class VideoLabelerApp:
     def __init__(
         self, folder: Path, csv_path: Path, width: int = 960, height: int = 540
-    ):
+    ) -> None:
         self.folder = folder
         self.csv_path = csv_path
         self.videos = list_videos(folder)
@@ -143,7 +143,8 @@ class VideoLabelerApp:
         video_parent: tk.Misc = self.root
         if IS_MAC:
             # On macOS, VLC can paint over the whole Tk window when attached to NSView.
-            # Use a dedicated top-level for video so controls remain visible in the main window.
+            # Use a dedicated top-level for video so controls remain visible in the
+            # main window.
             self.root.title("Label Controls")
             self.video_window = tk.Toplevel(self.root)
             self.video_window.title("Video Labeler (Video)")
@@ -288,7 +289,8 @@ class VideoLabelerApp:
         existing = self.labels.get(basename)
         existing_text = f" | already labeled: {existing[0]}" if existing else ""
         self.info_var.set(
-            f"{self.index + 1}/{len(self.videos)} | {basename}{existing_text} | Space=pause"
+            f"{self.index + 1}/{len(self.videos)} \
+                | {basename}{existing_text} | Space=pause"
         )
 
     def label_current(self, label: str) -> None:
