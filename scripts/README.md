@@ -37,7 +37,7 @@ Notes:
   `pip freeze` after uninstalling.
 - This is most useful inside your project virtual environment.
 
-## `move_random_videos.py`
+## `move-random-videos.py`
 
 Moves or copies a random subset of video files from a source directory to a
 destination directory.
@@ -47,7 +47,7 @@ Supported extensions: `.mp4`, `.mkv`, `.avi`, `.mov`, `.flv`, `.wmv`, `.webm`
 Usage:
 
 ```bash
-python scripts/move_random_videos.py SOURCE_DIR DEST_DIR [options]
+python scripts/move-random-videos.py SOURCE_DIR DEST_DIR [options]
 ```
 
 Common options:
@@ -65,7 +65,7 @@ Notes:
 
 ## `label-videos.py`
 
-Interactive video labeling tool. It plays videos from a folder and lets you label each one as `positive`, `neutral`, or `negative`.
+Interactive Tk + VLC video labeling tool. It plays videos from a folder and lets you label each one as `positive`, `neutral`, or `negative`.
 
 Usage:
 
@@ -77,6 +77,7 @@ Common options:
 
 - `--csv <path>`: output CSV path (default: `labels.csv`)
 - `--width <int>`: display width in pixels (default: `960`)
+- `--height <int>`: display height in pixels (default: `540`)
 
 Notes:
 
@@ -85,8 +86,8 @@ Notes:
 - Output CSV format is `"filename","label"` (quoted 2-column CSV).
 - `Back` returns to the previous video index so you can relabel it.
 - Keyboard shortcuts: `p` positive, `u` neutral, `n` negative, `s` skip, `b` back, `q` quit, `Space` pause/resume.
-- On macOS, videos open in QuickTime Player (external window) instead of embedded VLC.
-- On Windows, videos open in the default system video player (external window).
-- In external-player mode, `Space` pause/resume is not controlled by this script.
-- On Linux, playback remains embedded via VLC and requires VLC + `python-vlc`.
+- Requires `python-vlc` and a local VLC installation (all platforms).
+- Linux/Windows: video is embedded in the app window via VLC.
+- macOS: due to Tk + VLC `NSView` embedding behavior, video plays in a separate VLC/Tk window and the labeling controls stay in a floating controls window.
 - Requires Tkinter (`tk`). On macOS with Homebrew Python, install Tk support if needed.
+- If VLC cannot attach to Tk on macOS, you may need to point `TKVLC_LIBTK_PATH` at your `libtk*.dylib`.
