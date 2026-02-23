@@ -41,4 +41,4 @@ dependencies = [
 lint.select = ["E", "F", "I", "B", "ANN"]
 
 [dependency-groups]
-dev = ["pyright>=1.1.408"]
+dev = ["pyright>=1.1.408", "python-vlc>=3.0.21203"]
