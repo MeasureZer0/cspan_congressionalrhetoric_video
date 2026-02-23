@@ -62,3 +62,36 @@ Notes:
 
 - Both source and destination directories must already exist.
 - If fewer videos exist than requested, it processes all available videos.
+
+## `label-videos.py`
+
+The main video labeling tool. It plays videos from a folder and allows labeling them with one of three labels: Positive, Neutral, or Negative.
+
+Usage:
+
+```bash
+python scripts/label-videos.py FOLDER [options]
+```
+
+Common options:
+
+- `-c, --csv <path>`: path to the CSV file to use for labels (default: `labels.csv` in the folder)
+- `-f, --fps <float>`: maximum frames per second to display (default: `30.0`)
+- `-r, --resize <int>`: width in pixels to resize videos to (default: `960`)
+
+Notes:
+
+- Videos are played in alphabetical order.
+- The CSV file is updated in real-time as you label videos.
+- Keyboard shortcuts are available:
+  - `p`: Positive
+  - `n`: Negative
+  - `u`: Neutral
+  - `s`: Skip
+  - `b`: Back
+  - `q`: Quit
+  - Space: Pause/Resume
+
+Notes:
+
+- On MacOS/Linux, you may need to install `python-tk` with `brew install python-tk`
