@@ -122,25 +122,9 @@ options:
                         Batch size for training.
 ```
 
-## Utilities
+## Utility scripts
 
-### download-weights.py
-
-The `download-weights.py` script downloads the required model weights for the project. It saves the weights in the `data/weights` directory. To run the script, use:
-
-```bash
-chmod +x scripts/download-weights.py
-./scripts/download-weights.py
-```
-
-### pip-uninstall.py
-
-For easier package uninstallation, you can use the provided `pip-uninstall.py` script. It helps to uninstall packages along with their dependencies that are not required by other packages. Usage:
-
-```bash
-chmod +x scripts/pip-uninstall.py
-./scripts/pip-uninstall.py pkg1 pkg2 ...
-```
+You can find utility scripts in the `scripts/` directory. More info on the available scripts and how to use them can be found in the [scripts/README.md](./scripts/README.md) file.
 
 ## Sources
 
