@@ -65,7 +65,7 @@ Notes:
 
 ## `label-videos.py`
 
-The main video labeling tool. It plays videos from a folder and allows labeling them with one of three labels: Positive, Neutral, or Negative.
+Interactive video labeling tool. It plays videos from a folder and lets you label each one as `positive`, `neutral`, or `negative`.
 
 Usage:
 
@@ -75,23 +75,15 @@ python scripts/label-videos.py FOLDER [options]
 
 Common options:
 
-- `-c, --csv <path>`: path to the CSV file to use for labels (default: `labels.csv` in the folder)
-- `-f, --fps <float>`: maximum frames per second to display (default: `30.0`)
-- `-r, --resize <int>`: width in pixels to resize videos to (default: `960`)
+- `--csv <path>`: output CSV path (default: `labels.csv`)
+- `--fps <float>`: maximum display FPS cap (default: `30.0`)
+- `--width <int>`: display width in pixels (default: `960`)
 
 Notes:
 
 - Videos are played in alphabetical order.
-- The CSV file is updated in real-time as you label videos.
-- Keyboard shortcuts are available:
-  - `p`: Positive
-  - `n`: Negative
-  - `u`: Neutral
-  - `s`: Skip
-  - `b`: Back
-  - `q`: Quit
-  - Space: Pause/Resume
-
-Notes:
-
-- On MacOS/Linux, you may need to install `python-tk` with `brew install python-tk`
+- The CSV file is updated immediately as you label videos.
+- Output CSV format is `"filename","label"` (quoted 2-column CSV).
+- `Back` returns to the previous video index so you can relabel it.
+- Keyboard shortcuts: `p` positive, `u` neutral, `n` negative, `s` skip, `b` back, `q` quit, `Space` pause/resume.
+- Requires Tkinter (`tk`). On macOS with Homebrew Python, install Tk support if needed.
