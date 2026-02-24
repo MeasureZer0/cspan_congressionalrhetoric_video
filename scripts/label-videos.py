@@ -119,15 +119,35 @@ def write_labels(csv_path: Path, labels: Dict[str, Tuple[str, str]]) -> None:
 
 class VideoLabelerApp:
     def __init__(
-        self, folder: Path, csv_path: Path, width: int = 960, height: int = 540
+        self,
+        folder: Path,
+        csv_path: Path,
+        width: int = 960,
+        height: int = 540,
+        purge: bool = False,
     ) -> None:
         self.folder = folder
         self.csv_path = csv_path
-        self.videos = list_videos(folder)
-        if not self.videos:
+        self.labels = read_labels(csv_path)
+        all_videos = list_videos(folder)
+        if not all_videos:
             raise RuntimeError(f"No videos found in {folder}")
 
-        self.labels = read_labels(csv_path)
+        if purge:
+            removed_any = False
+            for video in all_videos:
+                if video.name in self.labels:
+                    del self.labels[video.name]
+                    removed_any = True
+            if removed_any:
+                write_labels(self.csv_path, self.labels)
+
+        self.videos = [video for video in all_videos if video.name not in self.labels]
+        if not self.videos:
+            raise RuntimeError(
+                f"No unlabeled videos found in {folder}. Use --purge to relabel."
+            )
+
         self.index = 0
         self.history: List[int] = []
         self.current_path: Optional[Path] = None
@@ -401,6 +421,11 @@ def main() -> None:
     parser.add_argument("folder", help="Folder containing videos")
     parser.add_argument("--csv", default="labels.csv", help="Output labels CSV path")
     parser.add_argument(
+        "--purge",
+        action="store_true",
+        help="Remove existing labels for videos in FOLDER before starting",
+    )
+    parser.add_argument(
         "--width", type=int, default=960, help="Video area width in pixels"
     )
     parser.add_argument(
@@ -415,7 +440,11 @@ def main() -> None:
 
     csv_path = Path(args.csv).expanduser().resolve()
     app = VideoLabelerApp(
-        folder=folder, csv_path=csv_path, width=args.width, height=args.height
+        folder=folder,
+        csv_path=csv_path,
+        width=args.width,
+        height=args.height,
+        purge=args.purge,
     )
     app.run()
 

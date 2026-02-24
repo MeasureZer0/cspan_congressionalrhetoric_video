@@ -76,12 +76,14 @@ python scripts/label-videos.py FOLDER [options]
 Common options:
 
 - `--csv <path>`: output CSV path (default: `labels.csv`)
+- `--purge`: remove existing labels for videos in `FOLDER` before starting
 - `--width <int>`: display width in pixels (default: `960`)
 - `--height <int>`: display height in pixels (default: `540`)
 
 Notes:
 
 - Videos are played in alphabetical order.
+- By default, already labeled videos (present in the CSV) are skipped.
 - The CSV file is updated immediately as you label videos.
 - Output CSV format is `"filename","label"` (quoted 2-column CSV).
 - `Back` returns to the previous video index so you can relabel it.
