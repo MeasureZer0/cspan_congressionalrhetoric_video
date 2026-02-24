@@ -253,7 +253,17 @@ class VideoLabelerApp:
             except tk.TclError:
                 pass
             self.root.resizable(False, False)
-            self.root.geometry("+40+40")
+            video_x = self.video_window.winfo_x()
+            video_y = self.video_window.winfo_y()
+            video_h = self.video_window.winfo_height()
+            video_w = self.video_window.winfo_width()
+            root_w = self.root.winfo_width()
+            root_h = self.root.winfo_height()
+            self.root.geometry(
+                f"+{video_x + video_w // 2 - root_w // 2}+{
+                    video_y + video_h + root_h // 2
+                }"
+            )
 
         self.vlc_instance = vlc.Instance()
         self.player: Any = self.vlc_instance.media_player_new()
