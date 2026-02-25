@@ -3,6 +3,12 @@
     "pythonPlatform": "All",
     "venvPath": "./.venv",
     "typeCheckingMode": "standard",
-    "include": ["preprocessing/", "training/", "utils/", "visualization/"],
+    "include": [
+        "preprocessing/",
+        "training/",
+        "utils/",
+        "visualization/",
+        "scripts/"
+    ],
     "exclude": ["**/__pycache__", ".*", "**/.ipynb_checkpoints**"]
 }
