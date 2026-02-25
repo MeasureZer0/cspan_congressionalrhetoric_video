@@ -6,8 +6,6 @@ Reuses the working VLC/Tk embedding approach (including macOS NSView handling)
 from the tkvlc example, but provides the labeling workflow from label-videos.py.
 """
 
-from __future__ import annotations
-
 import argparse
 import csv
 import os
@@ -19,6 +17,11 @@ from ctypes.util import find_library
 from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Any, Dict, List, Optional, Tuple
+
+if sys.platform.startswith("win"):
+    VLC_PATH = r"C:\Program Files\VideoLAN\VLC"
+    os.add_dll_directory(VLC_PATH)
+    os.environ["PYTHON_VLC_MODULE_PATH"] = VLC_PATH
 
 import vlc
 
