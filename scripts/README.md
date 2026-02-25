@@ -52,16 +52,41 @@ python scripts/move-random-videos.py SOURCE_DIR DEST_DIR [options]
 
 Common options:
 
-- `-n, --count <int>`: number of files to select (default: `1000`)
+- `-n, --count <int>`: target number of videos in `DEST_DIR` after processing (default: `100`)
 - `-r, --recursive`: search subdirectories recursively
 - `--copy`: copy files instead of moving them
 - `--overwrite`: overwrite files that already exist in the destination
 - `--dry-run`: print planned actions without modifying files
+- `--exclude-csv <path>`: CSV with a `filename` column; listed videos are excluded from selection
+- `--restore-excluded`: move excluded videos from destination back to source before refilling destination to target count
 
 Notes:
 
 - Both source and destination directories must already exist.
-- If fewer videos exist than requested, it processes all available videos.
+- The script treats `--count` as the desired final size of `DEST_DIR` (not "move exactly N files").
+- Videos already present in the destination are not selected again.
+- Destination counting/restoring only checks files directly in `DEST_DIR` (non-recursive).
+- If fewer eligible videos exist than requested, it processes all available eligible videos and prints a warning.
+- `--exclude-csv` expects a header row containing `filename` (extra columns are ignored).
+- `--restore-excluded` is most useful when rebalancing a labeling queue (e.g., returning already-labeled files from `moved_for_later/` back to `raw_videos/`).
+
+Examples:
+
+```bash
+# Fill moved_for_later/ up to 1000 random videos from raw_videos/
+python scripts/move-random-videos.py raw_videos moved_for_later -n 1000
+
+# Same, but skip files already listed in labels.csv
+python scripts/move-random-videos.py raw_videos moved_for_later -n 1000 \
+  --exclude-csv labels.csv
+
+# Return labeled files from moved_for_later/ to raw_videos/, then refill to 1000
+python scripts/move-random-videos.py raw_videos moved_for_later -n 1000 \
+  --exclude-csv labels.csv --restore-excluded
+
+# Preview actions without modifying files
+python scripts/move-random-videos.py raw_videos moved_for_later -n 1000 --dry-run
+```
 
 ## `label-videos.py`
 
