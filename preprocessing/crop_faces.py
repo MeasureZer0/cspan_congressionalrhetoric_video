@@ -1,4 +1,4 @@
-"""Video Preprocessing Module"""
+"""Video Preprocessing Module — faces + pose keypoints."""
 
 import concurrent.futures
 import os
@@ -6,12 +6,13 @@ import random
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-import cv2  # OpenCV for video processing
-import numpy as np  # NumPy for storing frames as arrays
-import pandas as pd  # Pandas for reading CSV labels
+import cv2
+import numpy as np
+import pandas as pd
 import torch
 from config import FaceDetectionConfig, PreprocessingConfig
 from extract_frames import extract_frames
+from extract_pose import extract_pose_from_frames
 from frame_augmentation import FrameAugmentation
 from tqdm import tqdm
 
@@ -175,7 +176,7 @@ def detect_and_crop_faces(
     size: tuple = (224, 224),
     margin: Optional[float] = 0.0,
     crop_width_ratio: float = 0.5,
-) -> List[np.ndarray]:
+) -> Tuple[List[np.ndarray], List[int]]:
     """
     Detect the face closest to horizontal center in each frame, crop, and resize.
 
@@ -190,11 +191,12 @@ def detect_and_crop_faces(
         List[np.ndarray]: List of cropped and resized face images (RGB).
     """
     if not frames:
-        return []
+        return [], []
 
-    face_crops = []
+    face_crops: List[np.ndarray] = []
+    valid_indices: List[int] = []
 
-    for f in frames:
+    for idx, f in enumerate(frames):
         _, w = f.shape[:2]
         new_w = int(w * crop_width_ratio)
         start = (w - new_w) // 2
@@ -203,14 +205,13 @@ def detect_and_crop_faces(
         loc = detect_speakers_face(f_cropped, detector=detector)
         face = crop_face(f_cropped, loc, margin=margin)
         if face is None:
-            # skip frames without a detected face
             continue
 
-        # Resize the face
         face_resized = cv2.resize(face, size)
         face_crops.append(face_resized)
+        valid_indices.append(idx)
 
-    return face_crops
+    return face_crops, valid_indices
 
 
 def convert_faces_to_tensors(
@@ -285,32 +286,45 @@ def process_single_video(
     augmenter: Optional[FrameAugmentation] = None,
 ) -> Optional[str]:
     """
-    Worker function: process one video, extract faces, save tensor(s).
+    Worker function: Process one video: extract faces + pose keypoints, save tensors.
 
     If augmenter is provided, saves both original (base path) and
     augmented (base + '_aug') versions.
 
     Returns base output path if successful, None otherwise.
     """
-    out_path_orig = Path(f"{out_path_base}_faces.pt")
-    out_path_aug = Path(f"{out_path_base}_aug_faces.pt") if augmenter else None
+    out_faces_orig = Path(f"{out_path_base}_faces.pt")
+    out_pose_orig = Path(f"{out_path_base}_pose.pt")
+    out_faces_aug = Path(f"{out_path_base}_aug_faces.pt") if augmenter else None
+    out_pose_aug = Path(f"{out_path_base}_aug_pose.pt") if augmenter else None
 
     # Check existence
-    orig_exists = out_path_orig.exists()
-    aug_exists = (
-        out_path_aug.exists() if out_path_aug else True
-    )  # If no aug needed, "exists" is True
+    orig_done = out_faces_orig.exists() and out_pose_orig.exists()
+    aug_done = (
+        (
+            out_faces_aug is not None
+            and out_faces_aug.exists()
+            and out_pose_aug is not None
+            and out_pose_aug.exists()
+        )
+        if augmenter
+        else True
+    )
 
-    if not purge and orig_exists and aug_exists:
+    if not purge and orig_done and aug_done:
         print(f"Skipping {video_path}: outputs already exist.")
         return str(out_path_base)
 
     # If we need to process, we do it once
     frames = extract_frames(path=video_path, frame_skip=frame_skip)
+    if not frames:
+        print(f"No frames extracted from {video_path}; skipping.")
+        return None
+
     detector = _get_face_detector()
 
     # 1. Detect and crop
-    face_crops = detect_and_crop_faces(
+    face_crops, valid_indices = detect_and_crop_faces(
         frames,
         detector=detector,
         size=size,
@@ -319,22 +333,36 @@ def process_single_video(
     )
 
     if not face_crops:
-        print(f"No faces found for {video_path}; skipping save.")
+        print(f"No faces found in {video_path}; skipping.")
         return None
 
+    valid_frames = [frames[i] for i in valid_indices]
+    pose_tensor = extract_pose_from_frames(
+        valid_frames,
+        crop_width_ratio=crop_width_ratio,
+    )
+
     # 2. Save Original if needed
-    if purge or not orig_exists:
+    if purge or not orig_done:
         tensors_orig = convert_faces_to_tensors(face_crops, augmenter=None)
-        faces_tensor_orig = stack_tensors(tensors_orig, size=size)
-        save_tensor(faces_tensor_orig, str(out_path_orig))
-        print(f"Saved {faces_tensor_orig.shape} -> {out_path_orig}")
+        faces_orig = stack_tensors(tensors_orig, size=size)
+        save_tensor(faces_orig, str(out_faces_orig))
+        save_tensor(pose_tensor, str(out_pose_orig))
+        print(
+            f"Saved {faces_orig.shape} faces, "
+            f"{pose_tensor.shape} pose -> {out_path_base}"
+        )
 
     # 3. Save Augmented if needed
-    if augmenter and (purge or not aug_exists):
+    if augmenter and (purge or not aug_done):
         tensors_aug = convert_faces_to_tensors(face_crops, augmenter=augmenter)
-        faces_tensor_aug = stack_tensors(tensors_aug, size=size)
-        save_tensor(faces_tensor_aug, str(out_path_aug))
-        print(f"Saved {faces_tensor_aug.shape} (Augmented) -> {out_path_aug}")
+        faces_aug = stack_tensors(tensors_aug, size=size)
+        save_tensor(faces_aug, str(out_faces_aug))
+        save_tensor(pose_tensor, str(out_pose_aug))
+        print(
+            f"Saved {faces_aug.shape} aug-faces, "
+            f"{pose_tensor.shape} pose (aug) -> {out_path_base}"
+        )
 
     return str(out_path_base)
 
