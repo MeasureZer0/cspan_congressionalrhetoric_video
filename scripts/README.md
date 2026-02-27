@@ -115,6 +115,7 @@ Notes:
 - Keyboard shortcuts: `p` positive, `u` neutral, `n` negative, `s` skip, `b` back, `q` quit, `Space` pause/resume.
 - Requires `python-vlc` and a local VLC installation (all platforms).
 - Linux/Windows: video is embedded in the app window via VLC.
+- Windows: you must change VLC_PATH to the correct VLC installation path on your computer.
 - macOS: due to Tk + VLC `NSView` embedding behavior, video plays in a separate VLC/Tk window and the labeling controls stay in a floating controls window.
 - Requires Tkinter (`tk`). On macOS with Homebrew Python, install Tk support if needed.
 - If VLC cannot attach to Tk on macOS, you may need to point `TKVLC_LIBTK_PATH` at your `libtk*.dylib`.
