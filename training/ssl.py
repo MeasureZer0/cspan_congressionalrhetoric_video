@@ -11,8 +11,7 @@ from tqdm import tqdm
 
 from .encoder import build_encoder
 from .faces_frames_dataset import FacesFramesSSLDataset, SimCLRDataset
-from .losses import NTXentLoss, NTXentLossWithMemoryBank
-from .memory_bank import MemoryBank
+from .losses import NTXentLoss
 from .models import SimCLRProjectionWrapper
 from .pose_transforms import PoseSimCLRTransform
 from .transforms import VideoSimCLRTransform
@@ -97,16 +96,8 @@ def train_ssl(
     param_groups.append({"params": model.projector.parameters(), "lr": 1e-4})
     optimizer = torch.optim.Adam(param_groups)
 
-    if args.use_memory_bank:
-        memory_bank = MemoryBank(size=args.bank_size, dim=projection_dim).to(device)
-        criterion: NTXentLoss | NTXentLossWithMemoryBank = NTXentLossWithMemoryBank(
-            temperature=args.temperature
-        )
-        print(f"Memory bank | size={args.bank_size} | temp={args.temperature}")
-    else:
-        criterion = NTXentLoss(temperature=args.temperature)
-        memory_bank = None
-        print(f"Standard NTXentLoss | temp={args.temperature}")
+    criterion = NTXentLoss(temperature=args.temperature)
+    print(f"NTXentLoss | temp={args.temperature}")
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=1e-6
@@ -127,28 +118,17 @@ def train_ssl(
             lengths = lengths.to(device, non_blocking=True)
 
             optimizer.zero_grad()
-
-            if args.use_memory_bank and memory_bank is not None:
+            with torch.amp.autocast("cuda", dtype=torch.bfloat16):
                 z1 = model(fv1, pv1, lengths)
                 z2 = model(fv2, pv2, lengths)
-                loss = criterion(z1, z2, memory_bank)  # type: ignore[call-arg]
-            else:
-                with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                    z1 = model(fv1, pv1, lengths)
-                    z2 = model(fv2, pv2, lengths)
-                loss = criterion(z1, z2)
-
+            loss = criterion(z1, z2)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
 
             epoch_loss += loss.item()
             num_batches += 1
-
-            postfix: dict[str, str] = {"loss": f"{loss.item():.4f}"}
-            if args.use_memory_bank and memory_bank is not None:
-                postfix["bank"] = f"{len(memory_bank)}/{args.bank_size}"
-            pbar.set_postfix(postfix)
+            pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
         avg_loss = epoch_loss / num_batches
         current_lr = optimizer.param_groups[0]["lr"]
@@ -161,7 +141,6 @@ def train_ssl(
     save_path = (
         weights_dir / f"ssl_backbone_{args.encoder}"
         f"_bs{args.batch_size}"
-        f"_mb{args.use_memory_bank}"
         f"_t{args.temperature}.pt"
     )
     torch.save(encoder.state_dict(), save_path)

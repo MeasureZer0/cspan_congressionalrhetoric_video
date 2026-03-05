@@ -30,8 +30,6 @@ if __name__ == "__main__":
     parser.add_argument("--load-ssl", action="store_true")
     parser.add_argument("--frame-skip", type=int, default=30)
     parser.add_argument("--subset", type=int, default=None)
-    parser.add_argument("--use-memory-bank", action="store_true")
-    parser.add_argument("--bank-size", type=int, default=32768)
     parser.add_argument("--temperature", type=float, default=0.5)
     parser.add_argument(
         "--freeze-backbone", action="store_true", help="Freeze ResNet backbone"
