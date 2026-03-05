@@ -43,7 +43,7 @@ class PreprocessingConfig:
 
     def __post_init__(self) -> None:
         if self.out_dir is None:
-            self.out_dir = DATA_DIR / "faces" / f"frame_skip_{self.frame_skip}"
+            self.out_dir = DATA_DIR / "processed" / f"frame_skip_{self.frame_skip}"
         assert self.label_file.exists(), f"Label file not found: {self.label_file}"
         assert self.data_dir.exists(), f"Data directory not found: {self.data_dir}"
 
