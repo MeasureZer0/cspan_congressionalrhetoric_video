@@ -34,7 +34,6 @@ def extract_frames(
         print(f"Error: Could not open video file {path}; skipping.")
         return []
 
-    # Total number of frames in the video
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     skip_start = min(int(total_frames * skip_start_ratio), 5 * 30)
@@ -51,6 +50,7 @@ def extract_frames(
         # Skip the first "skip_start" frames and last "skip_end" frames
         if counter < skip_start or counter >= total_frames - skip_end:
             counter += 1
+            continue
 
         # If no frame is returned:
         # - End of the video has been reached, OR
