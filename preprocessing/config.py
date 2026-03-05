@@ -27,6 +27,7 @@ class AugmentationConfig:
     contrast: float = 0.2
     saturation: float = 0.2
     hue: float = 0.1
+    probability: float = 0.5
 
 
 @dataclass
@@ -39,7 +40,7 @@ class PreprocessingConfig:
 
     # Processing parameters
     frame_skip: int = 30
-    out_dir: Path = DATA_DIR / "faces" / f"frame_skip_{frame_skip}"
+    out_dir: Optional[Path] = None
     size: tuple[int, int] = (224, 224)
     margin: float = 0.1
     crop_width_ratio: float = 0.5
@@ -63,6 +64,9 @@ class PreprocessingConfig:
         return config
 
     def __post_init__(self) -> None:
+        if self.out_dir is None:
+            self.out_dir = DATA_DIR / "faces" / f"frame_skip_{self.frame_skip}"
+
         assert self.label_file.exists(), f"Label file not found: {self.label_file}"
         assert self.data_dir.exists(), f"Data directory not found: {self.data_dir}"
 
@@ -83,6 +87,7 @@ class PreprocessingConfig:
         if self.augmentation.enabled:
             lines.extend(
                 [
+                    f"  Probability: {self.augmentation.probability}",
                     f"  Rotation degrees: ±{self.augmentation.rotation_degrees}",
                     f"  Brightness: ±{self.augmentation.brightness}",
                     f"  Contrast: ±{self.augmentation.contrast}",
