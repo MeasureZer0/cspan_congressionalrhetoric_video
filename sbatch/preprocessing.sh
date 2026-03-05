@@ -6,7 +6,6 @@
 #SBATCH -A cis220051       # The TDM account to charge for this. Don't change.
 #SBATCH -p shared          # Partition to use.
 
-# These three lines "load" the TDM python.  Almost always keep them.
 module use /anvil/projects/tdm/opt/core
 module load tdm
 module load python/seminar r/seminar
@@ -16,8 +15,7 @@ cd $SLURM_SUBMIT_DIR
 # -u to disable stdout buffering
 python3 -u preprocessing/preprocess.py \
     --purge \
-    --use-augmentation \
-    --frame_skip 30 \
+    --frame-skip 30 \
     >logs/preprocess_${SLURM_JOBID}.log \
     2>logs/preprocess_${SLURM_JOBID}.err
 
