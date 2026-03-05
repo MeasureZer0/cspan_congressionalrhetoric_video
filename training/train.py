@@ -16,13 +16,13 @@ if __name__ == "__main__":
     set_seed(37)
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--mode", type=str, choices=["ssl", "supervised"], required=True
+        "--mode", type=str, choices=["ssl", "supervised",], required=True
     )
     parser.add_argument(
         "--encoder",
         type=str,
-        choices=["baseline", "fast_gru"],
-        default="fast_gru",
+        choices=["baseline", "fast_gru", "dual_stream"],
+        default="dual_stream",
     )
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--num-workers", type=int, default=4)
@@ -33,6 +33,9 @@ if __name__ == "__main__":
     parser.add_argument("--use-memory-bank", action="store_true")
     parser.add_argument("--bank-size", type=int, default=32768)
     parser.add_argument("--temperature", type=float, default=0.5)
+    parser.add_argument(
+        "--freeze_backbone", action="store_true", help="Freeze ResNet backbone"
+    )
 
     args = parser.parse_args()
 

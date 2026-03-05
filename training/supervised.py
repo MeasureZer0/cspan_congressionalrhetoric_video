@@ -25,45 +25,31 @@ def train_supervised(
     logs_dir: Path,
 ) -> None:
     """
-    Main loop for supervised training and evaluation.
+    Main loop for supervised training and final test evaluation.
     """
-    print(f"--- STARTING SUPERVISED TRAINING with {args.encoder} ---")
+    print(f"--- SUPERVISED TRAINING with {args.encoder} ---")
 
     full_ds = FacesFramesSupervisedDataset(csv_file, img_dir)
     train_idx, val_idx, test_idx = stratified_split(full_ds, (0.8, 0.1, 0.1))
 
-    train_loader = DataLoader(
-        Subset(full_ds, train_idx),
-        batch_size=args.batch_size,
-        shuffle=True,
-        collate_fn=supervised_collate_fn,
-        num_workers=args.num_workers,
-        pin_memory=True,
-        persistent_workers=True if args.num_workers > 0 else False,
-    )
+    def _make_loader(indices: list[int], shuffle: bool) -> DataLoader:
+        return DataLoader(
+            Subset(full_ds, indices),
+            batch_size=args.batch_size,
+            shuffle=shuffle,
+            collate_fn=supervised_collate_fn,
+            num_workers=args.num_workers,
+            pin_memory=True,
+            persistent_workers=args.num_workers > 0,
+        )
 
-    val_loader = DataLoader(
-        Subset(full_ds, val_idx),
-        batch_size=args.batch_size,
-        shuffle=False,
-        collate_fn=supervised_collate_fn,
-        num_workers=args.num_workers,
-        pin_memory=True,
-        persistent_workers=True if args.num_workers > 0 else False,
-    )
-
-    test_loader = DataLoader(
-        Subset(full_ds, test_idx),
-        batch_size=args.batch_size,
-        shuffle=False,
-        collate_fn=supervised_collate_fn,
-        num_workers=args.num_workers,
-        pin_memory=True,
-        persistent_workers=True if args.num_workers > 0 else False,
-    )
+    train_loader = _make_loader(train_idx, shuffle=True)
+    val_loader = _make_loader(val_idx, shuffle=False)
+    test_loader = _make_loader(test_idx, shuffle=False)
 
     model, _ = build_encoder(args, device)
 
+    # Optionally load SSL pre-trained weights
     if args.load_ssl:
         ssl_path = weights_dir / f"ssl_backbone_{args.encoder}.pt"
         if ssl_path.exists():
@@ -76,9 +62,10 @@ def train_supervised(
 
     optimizer = build_optimizer(model, args)
 
-    class_counts = np.bincount([int(label.item()) for _, label in full_ds])
+    # Class-weighted cross-entropy
+    class_counts = np.bincount([int(label.item()) for _, _, label in full_ds])
     weights = 1.0 / torch.tensor(class_counts, dtype=torch.float)
-    weights = weights / weights.sum()
+    weights /= weights.sum()
     criterion = nn.CrossEntropyLoss(weight=weights.to(device))
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -87,145 +74,148 @@ def train_supervised(
     early_stopping = EarlyStopping(patience=15, min_delta=0.0001)
 
     best_val_acc = 0.0
-    best_model_path = (
-        weights_dir
-        / f"best_{args.encoder}_supervised_{date.today().strftime('%Y%m%d_%H%M%S')}.pt"
-    )
+    timestamp = date.today().strftime("%Y%m%d_%H%M%S")
+    best_model_path = weights_dir / f"best_{args.encoder}_supervised_{timestamp}.pt"
 
     logs_dir.mkdir(parents=True, exist_ok=True)
     csv_path = logs_dir / f"supervised_{args.encoder}_log.csv"
 
-    csv_file_handle = open(csv_path, mode="w", newline="")
-    writer = csv.writer(csv_file_handle)
-    writer.writerow(
-        [
-            "epoch",
-            "train_loss",
-            "val_loss",
-            "train_acc",
-            "val_acc",
-            "val_f1_macro",
-            "val_conf_matrix",
-            "lr",
-        ]
-    )
+    with open(csv_path, mode="w", newline="") as csv_fh:
+        writer = csv.writer(csv_fh)
+        writer.writerow(
+            [
+                "epoch",
+                "train_loss",
+                "val_loss",
+                "train_acc",
+                "val_acc",
+                "val_f1_macro",
+                "val_conf_matrix",
+                "lr",
+            ]
+        )
 
-    try:
-        for epoch in range(args.epochs):
-            # ==================== TRAINING ====================
-            model.train()
-            train_loss = 0.0
-            correct, total = 0, 0
+        try:
+            for epoch in range(args.epochs):
+                # =================== TRAINING ===================
+                model.train()
+                train_loss = 0.0
+                correct = total = 0
+                pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1} train")
 
-            pbar = tqdm(train_loader, desc=f"Supervised Epoch {epoch + 1}")
-            for faces, labels, lengths in pbar:
-                faces = faces.to(device, non_blocking=True)
-                labels = labels.to(device, non_blocking=True)
+                for faces, pose, labels, lengths in pbar:
+                    faces = faces.to(device, non_blocking=True)
+                    pose = pose.to(device, non_blocking=True)
+                    labels = labels.to(device, non_blocking=True)
 
-                optimizer.zero_grad()
-                logits = model(faces, lengths)
-                loss = criterion(logits, labels)
-                loss.backward()
-                optimizer.step()
+                    optimizer.zero_grad()
+                    logits = model(faces, pose, lengths)
+                    loss = criterion(logits, labels)
+                    loss.backward()
+                    optimizer.step()
 
-                train_loss += loss.item()
-                preds = logits.argmax(dim=1)
-                correct += (preds == labels).sum().item()
-                total += labels.size(0)
-                pbar.set_postfix(
-                    loss=f"{loss.item():.4f}",
-                    acc=f"{correct / total:.4f}" if total > 0 else "0",
+                    train_loss += loss.item()
+                    preds = logits.argmax(dim=1)
+                    correct += (preds == labels).sum().item()
+                    total += labels.size(0)
+                    pbar.set_postfix(
+                        loss=f"{loss.item():.4f}",
+                        acc=f"{correct / total:.4f}" if total else "–",
+                    )
+
+                train_acc = correct / total
+                avg_train_loss = train_loss / len(train_loader)
+
+                # =================== VALIDATION =================
+                model.eval()
+                val_loss = 0.0
+                all_preds = []
+                all_labels = []
+
+                with torch.no_grad():
+                    for faces, pose, labels, lengths in val_loader:
+                        faces = faces.to(device)
+                        pose = pose.to(device)
+                        labels = labels.to(device)
+                        logits = model(faces, pose, lengths)
+                        val_loss += criterion(logits, labels).item()
+                        all_preds.extend(logits.argmax(dim=1).cpu().numpy())
+                        all_labels.extend(labels.cpu().numpy())
+
+                avg_val_loss = val_loss / len(val_loader)
+                val_acc = np.mean(np.array(all_preds) == np.array(all_labels))
+                val_f1 = f1_score(all_labels, all_preds, average="macro")
+                val_cm = confusion_matrix(all_labels, all_preds)
+                val_cm_str = ";".join([",".join(map(str, r)) for r in val_cm])
+                current_lr = optimizer.param_groups[0]["lr"]
+
+                print(
+                    f"Epoch {epoch + 1}/{args.epochs}  "
+                    f"train_loss={avg_train_loss:.4f}  train_acc={train_acc:.4f}  "
+                    f"val_loss={avg_val_loss:.4f}  val_acc={val_acc:.4f}  "
+                    f"val_f1={val_f1:.4f}  lr={current_lr:.6f}"
                 )
 
-            train_acc = correct / total
-            avg_train_loss = train_loss / len(train_loader)
+                writer.writerow(
+                    [
+                        epoch + 1,
+                        f"{avg_train_loss:.6f}",
+                        f"{avg_val_loss:.6f}",
+                        f"{train_acc:.6f}",
+                        f"{val_acc:.6f}",
+                        f"{val_f1:.6f}",
+                        val_cm_str,
+                        f"{current_lr:.8f}",
+                    ]
+                )
+                csv_fh.flush()
 
-            # ==================== VALIDATION ====================
-            model.eval()
-            val_loss = 0.0
-            all_preds, all_labels = [], []
+                if val_acc > best_val_acc:
+                    best_val_acc = val_acc
+                    torch.save(model.state_dict(), best_model_path)
+                    print(f"  ✓ Best model saved (val_acc={val_acc:.4f})")
 
-            with torch.no_grad():
-                for faces, labels, lengths in val_loader:
-                    faces = faces.to(device)
-                    labels = labels.to(device)
-                    logits = model(faces, lengths)
-                    val_loss += criterion(logits, labels).item()
-                    preds = logits.argmax(dim=1)
-                    all_preds.extend(preds.cpu().numpy())
-                    all_labels.extend(labels.cpu().numpy())
+                scheduler.step()
 
-            avg_val_loss = val_loss / len(val_loader)
-            val_acc = np.mean(np.array(all_preds) == np.array(all_labels))
-            val_f1 = f1_score(all_labels, all_preds, average="macro")
-            val_cm = confusion_matrix(all_labels, all_preds)
-            val_cm_str = ";".join([",".join(map(str, row)) for row in val_cm])
-            current_lr = optimizer.param_groups[0]["lr"]
+                if early_stopping(avg_val_loss):
+                    print("Early stopping triggered.")
+                    break
 
-            print(f"Epoch {epoch + 1}/{args.epochs}")
-            print(f"  Train Loss: {avg_train_loss:.4f}, Train Acc: {train_acc:.4f}")
-            print(
-                f"  Val   Loss: {avg_val_loss:.4f}, \
-                    Val   Acc: {val_acc:.4f}, \
-                    Val   F1: {val_f1:.4f}"
-            )
-            print(f"  LR: {current_lr:.6f}")
+        finally:
+            print(f"\n✓ Training log → {csv_path}")
 
-            writer.writerow(
-                [
-                    epoch + 1,
-                    f"{avg_train_loss:.6f}",
-                    f"{avg_val_loss:.6f}",
-                    f"{train_acc:.6f}",
-                    f"{val_acc:.6f}",
-                    f"{val_f1:.6f}",
-                    val_cm_str,
-                    f"{current_lr:.8f}",
-                ]
-            )
-            csv_file_handle.flush()
-
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
-                torch.save(model.state_dict(), best_model_path)
-                print(f"  ✓ Saved best model (val_acc: {val_acc:.4f})")
-
-            scheduler.step()
-
-            if early_stopping(avg_val_loss):
-                print("Early stopping triggered!")
-                break
-
-    finally:
-        csv_file_handle.close()
-        print(f"\n✓ Training logs saved to {csv_path}")
-
-    # ==================== TEST ====================
+    # =================== TEST ===================================
     print("\n--- FINAL TEST EVALUATION ---")
     model.load_state_dict(torch.load(best_model_path, map_location=device))
     model.eval()
 
     test_preds, test_labels_list = [], []
     with torch.no_grad():
-        for faces, labels, lengths in test_loader:
+        pbar = tqdm(test_loader, desc="Test evaluation")
+        for faces, pose, labels, lengths in pbar:
             faces = faces.to(device)
+            pose = pose.to(device)
             labels = labels.to(device)
-            preds = model(faces, lengths).argmax(dim=1)
+            preds = model(faces, pose, lengths).argmax(dim=1)
             test_preds.extend(preds.cpu().numpy())
             test_labels_list.extend(labels.cpu().numpy())
+            
+            del faces, pose, labels, preds
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
 
     test_acc = np.mean(np.array(test_preds) == np.array(test_labels_list))
     test_f1 = f1_score(test_labels_list, test_preds, average="macro")
     test_cm = confusion_matrix(test_labels_list, test_preds)
 
-    print(f"Test Accuracy: {test_acc:.4f}")
-    print(f"Test F1-macro: {test_f1:.4f}")
+    print(f"Test Accuracy : {test_acc:.4f}")
+    print(f"Test F1-macro : {test_f1:.4f}")
     print(f"Confusion Matrix:\n{test_cm}")
 
-    test_results_path = logs_dir / f"test_results_{args.encoder}.txt"
-    with open(test_results_path, "w") as f:
+    results_path = logs_dir / f"test_results_{args.encoder}.txt"
+    with open(results_path, "w") as f:
         f.write(f"Model: {args.encoder}\n")
-        f.write(f"Test Accuracy: {test_acc:.4f}\n")
-        f.write(f"Test F1-macro: {test_f1:.4f}\n")
-        f.write(f"Test Confusion Matrix:\n{test_cm}\n")
-    print(f"Test results saved to {test_results_path}")
+        f.write(f"Test Accuracy : {test_acc:.4f}\n")
+        f.write(f"Test F1-macro : {test_f1:.4f}\n")
+        f.write(f"Confusion Matrix:\n{test_cm}\n")
+    print(f"Test results → {results_path}")

@@ -64,7 +64,7 @@ class FacesFramesSSLDataset(Dataset):
         else:
             pose = torch.zeros(faces.shape[0], 17, 3)
 
-        # Align lengths (face detector may have dropped some frames)
+        # Align lengths
         min_t = min(faces.shape[0], pose.shape[0])
         faces = faces[:min_t]
         pose = pose[:min_t]
@@ -151,13 +151,8 @@ class SimCLRDataset(Dataset):
     of each sample for contrastive pre-training.
     """
 
-    def __init__(
-        self,
-        base_dataset: FacesFramesSSLDataset | Subset[tuple[torch.Tensor, torch.Tensor]],
-        face_transform: Callable[[torch.Tensor], torch.Tensor],
-        pose_transform: Callable[[torch.Tensor], torch.Tensor],
-    ) -> None:
-        self.base = base_dataset
+    def __init__(self, base: FacesFramesSSLDataset, face_transform: Callable, pose_transform: Callable) -> None:
+        self.base = base
         self.face_transform = face_transform
         self.pose_transform = pose_transform
 
@@ -170,8 +165,8 @@ class SimCLRDataset(Dataset):
         """
         Returns
         -------
-        face_v1, face_v2 : two augmented face sequences  [T, 3, H, W]
-        pose_v1, pose_v2 : two augmented pose sequences  [T, 17, 3]
+        face_v1, face_v2 : two independently augmented face sequences  [T, 3, H, W]
+        pose_v1, pose_v2 : two independently augmented pose sequences  [T, 17, 3]
         """
         sample = self.base[idx]
         faces: torch.Tensor = sample[0]
