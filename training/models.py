@@ -151,7 +151,7 @@ class PoseGRU(nn.Module):
 class DualStreamEncoder(nn.Module):
     """
     Late-fusion model combining a face stream (FastGRU) and a pose stream
-    (PoseGRU).
+    (PoseGRU). Supports freezing the ResNet backbone via freeze_backbone.
     """
 
     def __init__(
@@ -159,9 +159,13 @@ class DualStreamEncoder(nn.Module):
         face_hidden: int = 128,
         pose_hidden: int = 64,
         num_classes: int = 3,
+        freeze_backbone: bool = False,
     ) -> None:
         super().__init__()
-        self.face_encoder = FastGRU(hidden_size=face_hidden)
+        self.face_encoder = FastGRU(
+            hidden_size=face_hidden,
+            freeze_backbone=freeze_backbone,
+        )
         self.pose_encoder = PoseGRU(hidden_size=pose_hidden)
 
         fusion_dim = face_hidden + pose_hidden

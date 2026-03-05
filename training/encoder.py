@@ -10,8 +10,9 @@ def build_encoder(
     device: torch.device,
 ) -> tuple[FastGRU | DualStreamEncoder, int]:
     """Instantiate the encoder specified by args.encoder."""
+    freeze_backbone = getattr(args, "freeze_backbone", False)
+
     if args.encoder == "fast_gru":
-        freeze_backbone = getattr(args, "freeze_backbone", False)
         encoder = FastGRU(hidden_size=128, freeze_backbone=freeze_backbone).to(device)
         encoder_dim = encoder.output_dim
 
@@ -19,6 +20,7 @@ def build_encoder(
         encoder = DualStreamEncoder(
             face_hidden=128,
             pose_hidden=64,
+            freeze_backbone=freeze_backbone,
         ).to(device)
         encoder_dim = encoder.output_dim
 
