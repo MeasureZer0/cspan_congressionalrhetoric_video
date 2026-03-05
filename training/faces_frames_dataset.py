@@ -5,6 +5,7 @@ Supports SSL (unlabelled) and supervised tasks.
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -83,35 +84,54 @@ class FacesFramesSSLDataset(Dataset):
 class FacesFramesSupervisedDataset(Dataset):
     """
     Loads face tensors, pose keypoints, and integer labels from a CSV.
+
+    Parameters
+    ----------
+    csv_file : Path
+        CSV with columns [video_name, label].
+    img_dir : Path
+        Directory containing *_faces.pt and *_pose.pt tensors.
+    transform : callable, optional
+        Augmentation applied to the face tensor [T, 3, H, W].
+        Pass only for the train split; leave None for val/test.
+    aug_multiplier : int
+        How many times each sample appears in the dataset.
+        With transform=None this has no effect (copies would be identical).
+        With transform set, each repeat gets independently sampled augmentation,
+        effectively growing the dataset by aug_multiplier without touching disk.
+        Default: 1 (no repetition).
     """
 
-    def __init__(self, csv_file: Path, img_dir: Path) -> None:
+    def __init__(
+        self,
+        csv_file: Path,
+        img_dir: Path,
+        transform: Optional[Callable] = None,
+        aug_multiplier: int = 1,
+    ) -> None:
         self.img_dir = Path(img_dir)
         self.csv = pd.read_csv(csv_file)
         self.classes = {"negative": 0, "neutral": 1, "positive": 2}
+        self.transform = transform
+        self.aug_multiplier = aug_multiplier if transform is not None else 1
         self.samples = self._build_index()
 
     def _build_index(self) -> list[tuple[str, str]]:
-        samples = []
+        """Build sample list, repeating each entry aug_multiplier times."""
+        base = []
         for i in range(len(self.csv)):
             video_name = str(self.csv.iloc[i, 0])
             label_str = str(self.csv.iloc[i, 1]).strip()
             stem = Path(video_name).stem
             if (self.img_dir / f"{stem}_faces.pt").exists():
-                samples.append((stem, label_str))
-        return samples
+                base.append((stem, label_str))
+
+        return base * self.aug_multiplier
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Returns
-        -------
-        faces : torch.Tensor  [T, 3, H, W]
-        pose  : torch.Tensor  [T, 17, 3]
-        label : torch.Tensor  scalar long
-        """
         stem, label_str = self.samples[idx]
 
         faces = torch.load(self.img_dir / f"{stem}_faces.pt", weights_only=True)
@@ -122,10 +142,12 @@ class FacesFramesSupervisedDataset(Dataset):
             else torch.zeros(faces.shape[0], 17, 3)
         )
 
-        # Align face / pose lengths
         min_t = min(faces.shape[0], pose.shape[0])
         faces = faces[:min_t]
         pose = pose[:min_t]
+
+        if self.transform is not None:
+            faces = self.transform(faces)
 
         label = torch.tensor(self.classes[label_str], dtype=torch.long)
         return faces, pose, label

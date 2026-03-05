@@ -35,7 +35,7 @@ def build_optimizer(
         if classifier is not None:
             param_groups.append({"params": classifier.parameters(), "lr": 1e-3})
 
-        return torch.optim.Adam(param_groups)
+        return torch.optim.Adam(param_groups, weight_decay=1e-4)
 
     if args.encoder == "dual_stream":
         dual = cast(_DualStreamLike, getattr(model, "encoder", model))
@@ -49,7 +49,7 @@ def build_optimizer(
             {"params": dual.fusion.parameters(), "lr": 1e-3},
             {"params": dual.classifier.parameters(), "lr": 1e-3},
         ]
-        return torch.optim.Adam(param_groups)
+        return torch.optim.Adam(param_groups, weight_decay=1e-4)
 
     raise ValueError(
         f"Unknown encoder: {args.encoder!r}. Choose one of: 'fast_gru', 'dual_stream'."

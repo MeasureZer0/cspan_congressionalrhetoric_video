@@ -34,6 +34,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--freeze-backbone", action="store_true", help="Freeze ResNet backbone"
     )
+    parser.add_argument(
+        "--aug-multiplier",
+        type=int,
+        default=3,
+        help="How many augmented copies of each train sample per epoch",
+    )
 
     args = parser.parse_args()
 

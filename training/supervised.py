@@ -7,12 +7,13 @@ import numpy as np
 import torch
 from sklearn.metrics import confusion_matrix, f1_score
 from torch import nn
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from .encoder import build_encoder
 from .faces_frames_dataset import FacesFramesSupervisedDataset
 from .optimizer import build_optimizer
+from .transforms import VideoSimCLRTransform
 from .utils import EarlyStopping, supervised_collate_fn
 
 
@@ -33,11 +34,27 @@ def train_supervised(
     val_csv = csv_file.parent / "val.csv"
     test_csv = csv_file.parent / "test.csv"
 
-    train_ds = FacesFramesSupervisedDataset(train_csv, img_dir)
+    train_transform = VideoSimCLRTransform(
+        size=128,
+        jitter_params=(0.3, 0.3, 0.3, 0.05),
+        gray_p=0.1,
+    )
+
+    aug_multiplier = getattr(args, "aug_multiplier", 1)
+    train_ds = FacesFramesSupervisedDataset(
+        train_csv, img_dir, transform=train_transform, aug_multiplier=aug_multiplier
+    )
     val_ds = FacesFramesSupervisedDataset(val_csv, img_dir)
     test_ds = FacesFramesSupervisedDataset(test_csv, img_dir)
 
-    def _make_loader(dataset: FacesFramesSupervisedDataset, shuffle: bool) -> DataLoader:
+    n_orig = len(train_ds) // aug_multiplier
+    print(
+        f"Train: {len(train_ds)} ({n_orig} original × {aug_multiplier}) | Val: {len(val_ds)} | Test: {len(test_ds)}"
+    )
+
+    def _make_loader(
+        dataset: FacesFramesSupervisedDataset, shuffle: bool
+    ) -> DataLoader:
         return DataLoader(
             dataset,
             batch_size=args.batch_size,
@@ -67,14 +84,12 @@ def train_supervised(
 
     optimizer = build_optimizer(model, args)
 
-    class_counts = np.bincount([int(label.item()) for _, _, label in train_ds])
+    original_ds = FacesFramesSupervisedDataset(train_csv, img_dir)
+    class_counts = np.bincount([int(label.item()) for _, _, label in original_ds])
     weights = 1.0 / torch.tensor(class_counts, dtype=torch.float)
     weights /= weights.sum()
     criterion = nn.CrossEntropyLoss(weight=weights.to(device))
 
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.epochs, eta_min=1e-6
-    )
     early_stopping = EarlyStopping(patience=15, min_delta=0.0001)
 
     best_val_acc = 0.0
@@ -178,8 +193,6 @@ def train_supervised(
                     best_val_acc = val_acc
                     torch.save(model.state_dict(), best_model_path)
                     print(f"  ✓ Best model saved (val_acc={val_acc:.4f})")
-
-                scheduler.step()
 
                 if early_stopping(avg_val_loss):
                     print("Early stopping triggered.")
