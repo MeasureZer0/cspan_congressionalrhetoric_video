@@ -42,6 +42,9 @@ def extract_frames(
     frames: list[ndarray] = []
     counter = 0
 
+    max_frames = 120
+
+
     while True:
         ret, frame = cap.read()
 
@@ -54,6 +57,10 @@ def extract_frames(
 
         if counter % frame_skip == 0:
             frames.append(frame)
+
+        # Stop capturing if max_frames is reached
+        if len(frames) >= max_frames:
+            break
 
         counter += 1
 

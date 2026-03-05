@@ -23,7 +23,7 @@ class PreprocessingConfig:
     # Processing parameters
     frame_skip: int = 30
     out_dir: Optional[Path] = None
-    size: tuple[int, int] = (224, 224)
+    size: tuple[int, int] = (128, 128)
     margin: float = 0.1
     crop_width_ratio: float = 0.5
 
