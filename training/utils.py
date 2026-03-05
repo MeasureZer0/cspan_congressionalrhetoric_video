@@ -29,11 +29,6 @@ def default_paths() -> tuple[Path, Path, Path, Path]:
     return img_dir, csv_file, weights_dir, logs_dir
 
 
-# ---------------------------------------------------------------------------
-# Collate functions
-# ---------------------------------------------------------------------------
-
-
 def ssl_collate_fn(
     batch: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -82,11 +77,6 @@ def supervised_collate_fn(
     return faces_padded, pose_padded, labels, lengths
 
 
-# ---------------------------------------------------------------------------
-# Training helpers
-# ---------------------------------------------------------------------------
-
-
 class EarlyStopping:
     """Stop training when validation loss stops improving."""
 
@@ -100,7 +90,7 @@ class EarlyStopping:
         self.min_delta = min_delta
         self.verbose = verbose
         self.counter = 0
-        self.best_loss = None
+        self.best_loss: float | None = None
         self.early_stop = False
 
     def __call__(self, val_loss: float) -> bool:
@@ -127,15 +117,15 @@ def stratified_split(
     """
     Stratified train / val / test split.
     """
-    indices: tuple[list[int], list[int], list[int]] = ([], [], [])
+    class_indices: list[list[int]] = [[], [], []]
     for i in range(len(dataset)):
         _, _, label = dataset[i]
-        indices[int(label.item())].append(i)
+        class_indices[int(label.item())].append(i)
 
     train_idx, val_idx, test_idx = [], [], []
     cum = [fractions[0], fractions[0] + fractions[1]]
 
-    for cls_indices in indices:
+    for cls_indices in class_indices:
         random.shuffle(cls_indices)
         n = len(cls_indices)
         n_tr = int(cum[0] * n)

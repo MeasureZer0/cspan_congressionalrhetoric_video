@@ -32,17 +32,15 @@ def train_ssl(
       face_v1, face_v2  – from VideoSimCLRTransform
       pose_v1, pose_v2  – from PoseSimCLRTransform
 
-    The encoder (DualStreamEncoder or FastGRU) maps each view to an
-    embedding, the projection head maps to the contrastive space, and
-    NTXentLoss pulls same-sample embeddings together.
+    The encoder maps each view to an embedding, the projection head maps to
+    the contrastive space, and NTXentLoss pulls same-sample embeddings together.
     """
     print(f"--- STARTING SSL PRETRAINING (SimCLR) with {args.encoder} ---")
 
-    base_ds = FacesFramesSSLDataset(img_dir)
+    base_ds: FacesFramesSSLDataset | Subset = FacesFramesSSLDataset(img_dir)
 
     if args.subset and args.subset < len(base_ds):
         indices = random.sample(range(len(base_ds)), args.subset)
-        base_ds: FacesFramesSSLDataset | Subset[tuple[torch.Tensor, torch.Tensor]]
         base_ds = Subset(base_ds, indices)
         print(f"Using subset of {args.subset} samples")
 
@@ -65,21 +63,12 @@ def train_ssl(
     projection_dim = 256
 
     if args.encoder == "fast_gru":
-        if hasattr(encoder, "backbone") and hasattr(
-            encoder.backbone, "named_parameters"
-        ):
-            for name, param in encoder.backbone.named_parameters():
-                param.requires_grad = not ("layer1" in name or "layer2" in name)
+        for name, param in encoder.backbone.named_parameters():
+            param.requires_grad = not ("layer1" in name or "layer2" in name)
 
     elif args.encoder == "dual_stream":
-        face_enc = getattr(encoder, "face_encoder", None)
-        if (
-            face_enc is not None
-            and hasattr(face_enc, "backbone")
-            and hasattr(face_enc.backbone, "named_parameters")
-        ):
-            for name, param in face_enc.backbone.named_parameters():
-                param.requires_grad = not ("layer1" in name or "layer2" in name)
+        for name, param in encoder.face_encoder.backbone.named_parameters():
+            param.requires_grad = not ("layer1" in name or "layer2" in name)
 
     model = SimCLRProjectionWrapper(
         encoder,
@@ -87,33 +76,32 @@ def train_ssl(
         projection_dim=projection_dim,
     ).to(device)
 
-    # Per-component learning rates
     param_groups: list[dict] = []
 
     if args.encoder == "fast_gru":
-        face_enc = encoder
-        param_groups.append({"params": face_enc.backbone.parameters(), "lr": 1e-5})
-        param_groups.append({"params": face_enc.gru.parameters(), "lr": 1e-4})
-        param_groups.append({"params": face_enc.attention.parameters(), "lr": 1e-4})
+        param_groups += [
+            {"params": encoder.backbone.parameters(), "lr": 1e-5},
+            {"params": encoder.gru.parameters(), "lr": 1e-4},
+            {"params": encoder.attention.parameters(), "lr": 1e-4},
+        ]
 
     elif args.encoder == "dual_stream":
-        face_enc = encoder.face_encoder
-        param_groups.append({"params": face_enc.backbone.parameters(), "lr": 1e-5})
-        param_groups.append({"params": face_enc.gru.parameters(), "lr": 1e-4})
-        param_groups.append({"params": face_enc.attention.parameters(), "lr": 1e-4})
-        param_groups.append({"params": encoder.pose_encoder.parameters(), "lr": 1e-4})
-        param_groups.append({"params": encoder.fusion.parameters(), "lr": 1e-4})
-
-    elif args.encoder == "baseline":
-        param_groups.append({"params": encoder.parameters(), "lr": 1e-4})
+        param_groups += [
+            {"params": encoder.face_encoder.backbone.parameters(), "lr": 1e-5},
+            {"params": encoder.face_encoder.gru.parameters(), "lr": 1e-4},
+            {"params": encoder.face_encoder.attention.parameters(), "lr": 1e-4},
+            {"params": encoder.pose_encoder.parameters(), "lr": 1e-4},
+            {"params": encoder.fusion.parameters(), "lr": 1e-4},
+        ]
 
     param_groups.append({"params": model.projector.parameters(), "lr": 1e-4})
-
     optimizer = torch.optim.Adam(param_groups)
 
     if args.use_memory_bank:
         memory_bank = MemoryBank(size=args.bank_size, dim=projection_dim).to(device)
-        criterion = NTXentLossWithMemoryBank(temperature=args.temperature)
+        criterion: NTXentLoss | NTXentLossWithMemoryBank = NTXentLossWithMemoryBank(
+            temperature=args.temperature
+        )
         print(f"Memory bank | size={args.bank_size} | temp={args.temperature}")
     else:
         criterion = NTXentLoss(temperature=args.temperature)
@@ -139,26 +127,25 @@ def train_ssl(
             lengths = lengths.to(device, non_blocking=True)
 
             optimizer.zero_grad()
-            if args.use_memory_bank:
+
+            if args.use_memory_bank and memory_bank is not None:
                 z1 = model(fv1, pv1, lengths)
                 z2 = model(fv2, pv2, lengths)
-                loss = criterion(z1, z2, memory_bank)
-                loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
+                loss = criterion(z1, z2, memory_bank)  # type: ignore[call-arg]
             else:
                 with torch.amp.autocast("cuda", dtype=torch.bfloat16):
                     z1 = model(fv1, pv1, lengths)
                     z2 = model(fv2, pv2, lengths)
                 loss = criterion(z1, z2)
-                loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
+
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
 
             epoch_loss += loss.item()
             num_batches += 1
 
-            postfix = {"loss": f"{loss.item():.4f}"}
+            postfix: dict[str, str] = {"loss": f"{loss.item():.4f}"}
             if args.use_memory_bank and memory_bank is not None:
                 postfix["bank"] = f"{len(memory_bank)}/{args.bank_size}"
             pbar.set_postfix(postfix)
@@ -171,7 +158,6 @@ def train_ssl(
         )
         scheduler.step()
 
-    # Save encoder backbone (without projection head)
     save_path = (
         weights_dir / f"ssl_backbone_{args.encoder}"
         f"_bs{args.batch_size}"

@@ -9,11 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset, Subset
-
-# ---------------------------------------------------------------------------
-# SSL base dataset
-# ---------------------------------------------------------------------------
+from torch.utils.data import Dataset
 
 
 class FacesFramesSSLDataset(Dataset):
@@ -50,7 +46,7 @@ class FacesFramesSSLDataset(Dataset):
         stem = self.samples[idx]
 
         try:
-            faces = torch.load(self.img_dir / f"{stem}_faces.pt")
+            faces = torch.load(self.img_dir / f"{stem}_faces.pt", weights_only=True)
         except Exception:
             print(f"Corrupted file: {stem}_faces.pt")
             return self.__getitem__((idx + 1) % len(self))
@@ -58,7 +54,7 @@ class FacesFramesSSLDataset(Dataset):
         pose_path = self.img_dir / f"{stem}_pose.pt"
         if pose_path.exists():
             try:
-                pose = torch.load(pose_path)
+                pose = torch.load(pose_path, weights_only=True)
             except Exception:
                 pose = torch.zeros(faces.shape[0], 17, 3)
         else:
@@ -82,11 +78,6 @@ class FacesFramesSSLDataset(Dataset):
             pose = pose[: self.max_frames]
 
         return faces, pose
-
-
-# ---------------------------------------------------------------------------
-# Supervised dataset
-# ---------------------------------------------------------------------------
 
 
 class FacesFramesSupervisedDataset(Dataset):
@@ -123,10 +114,10 @@ class FacesFramesSupervisedDataset(Dataset):
         """
         stem, label_str = self.samples[idx]
 
-        faces = torch.load(self.img_dir / f"{stem}_faces.pt")
+        faces = torch.load(self.img_dir / f"{stem}_faces.pt", weights_only=True)
         pose_path = self.img_dir / f"{stem}_pose.pt"
         pose = (
-            torch.load(pose_path)
+            torch.load(pose_path, weights_only=True)
             if pose_path.exists()
             else torch.zeros(faces.shape[0], 17, 3)
         )
@@ -140,18 +131,18 @@ class FacesFramesSupervisedDataset(Dataset):
         return faces, pose, label
 
 
-# ---------------------------------------------------------------------------
-# SimCLR wrapper
-# ---------------------------------------------------------------------------
-
-
 class SimCLRDataset(Dataset):
     """
     Wraps a base SSL dataset and returns two independently-augmented views
     of each sample for contrastive pre-training.
     """
 
-    def __init__(self, base: FacesFramesSSLDataset, face_transform: Callable, pose_transform: Callable) -> None:
+    def __init__(
+        self,
+        base: FacesFramesSSLDataset,
+        face_transform: Callable,
+        pose_transform: Callable,
+    ) -> None:
         self.base = base
         self.face_transform = face_transform
         self.pose_transform = pose_transform
@@ -168,9 +159,7 @@ class SimCLRDataset(Dataset):
         face_v1, face_v2 : two independently augmented face sequences  [T, 3, H, W]
         pose_v1, pose_v2 : two independently augmented pose sequences  [T, 17, 3]
         """
-        sample = self.base[idx]
-        faces: torch.Tensor = sample[0]
-        pose: torch.Tensor = sample[1]
+        faces, pose = self.base[idx]
         return (
             self.face_transform(faces),
             self.face_transform(faces),

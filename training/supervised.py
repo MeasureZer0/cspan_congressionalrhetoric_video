@@ -1,6 +1,6 @@
 import argparse
 import csv
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -49,12 +49,12 @@ def train_supervised(
 
     model, _ = build_encoder(args, device)
 
-    # Optionally load SSL pre-trained weights
     if args.load_ssl:
         ssl_path = weights_dir / f"ssl_backbone_{args.encoder}.pt"
         if ssl_path.exists():
             model.load_state_dict(
-                torch.load(ssl_path, map_location=device), strict=False
+                torch.load(ssl_path, map_location=device, weights_only=True),
+                strict=False,
             )
             print(f"Loaded SSL weights from {ssl_path}")
         else:
@@ -62,7 +62,6 @@ def train_supervised(
 
     optimizer = build_optimizer(model, args)
 
-    # Class-weighted cross-entropy
     class_counts = np.bincount([int(label.item()) for _, _, label in full_ds])
     weights = 1.0 / torch.tensor(class_counts, dtype=torch.float)
     weights /= weights.sum()
@@ -74,7 +73,7 @@ def train_supervised(
     early_stopping = EarlyStopping(patience=15, min_delta=0.0001)
 
     best_val_acc = 0.0
-    timestamp = date.today().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     best_model_path = weights_dir / f"best_{args.encoder}_supervised_{timestamp}.pt"
 
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -129,8 +128,8 @@ def train_supervised(
                 # =================== VALIDATION =================
                 model.eval()
                 val_loss = 0.0
-                all_preds = []
-                all_labels = []
+                all_preds: list[int] = []
+                all_labels: list[int] = []
 
                 with torch.no_grad():
                     for faces, pose, labels, lengths in val_loader:
@@ -186,10 +185,14 @@ def train_supervised(
 
     # =================== TEST ===================================
     print("\n--- FINAL TEST EVALUATION ---")
-    model.load_state_dict(torch.load(best_model_path, map_location=device))
+    model.load_state_dict(
+        torch.load(best_model_path, map_location=device, weights_only=True)
+    )
     model.eval()
 
-    test_preds, test_labels_list = [], []
+    test_preds: list[int] = []
+    test_labels_list: list[int] = []
+
     with torch.no_grad():
         pbar = tqdm(test_loader, desc="Test evaluation")
         for faces, pose, labels, lengths in pbar:
@@ -199,9 +202,9 @@ def train_supervised(
             preds = model(faces, pose, lengths).argmax(dim=1)
             test_preds.extend(preds.cpu().numpy())
             test_labels_list.extend(labels.cpu().numpy())
-            
+
             del faces, pose, labels, preds
-            if device.type == 'cuda':
+            if device.type == "cuda":
                 torch.cuda.empty_cache()
 
     test_acc = np.mean(np.array(test_preds) == np.array(test_labels_list))

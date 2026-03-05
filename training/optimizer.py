@@ -6,7 +6,7 @@ from torch import nn
 
 
 class _FastGruLike(Protocol):
-    image_extractor: nn.Module
+    backbone: nn.Module
     gru: nn.Module
     attention: nn.Module
 
@@ -22,19 +22,16 @@ def build_optimizer(
     model: nn.Module,
     args: argparse.Namespace,
 ) -> torch.optim.Optimizer:
-    """
-    Build an Adam optimizer with per-component learning rates.
-    """
+    """Build an Adam optimizer with per-component learning rates."""
     if args.encoder == "fast_gru":
         enc = cast(_FastGruLike, getattr(model, "encoder", model))
         classifier = getattr(model, "classifier", None)
 
-        param_groups = [
+        param_groups: list[dict] = [
             {"params": enc.backbone.parameters(), "lr": 1e-5},
             {"params": enc.gru.parameters(), "lr": 1e-4},
             {"params": enc.attention.parameters(), "lr": 1e-4},
         ]
-
         if classifier is not None:
             param_groups.append({"params": classifier.parameters(), "lr": 1e-3})
 
@@ -52,8 +49,8 @@ def build_optimizer(
             {"params": dual.fusion.parameters(), "lr": 1e-3},
             {"params": dual.classifier.parameters(), "lr": 1e-3},
         ]
-
         return torch.optim.Adam(param_groups)
 
-    # baseline
-    return torch.optim.Adam(model.parameters(), lr=1e-4)
+    raise ValueError(
+        f"Unknown encoder: {args.encoder!r}. Choose one of: 'fast_gru', 'dual_stream'."
+    )

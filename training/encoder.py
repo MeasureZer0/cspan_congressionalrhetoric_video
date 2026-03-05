@@ -2,24 +2,18 @@ import argparse
 
 import torch
 
-from .models import DualStreamEncoder, FastGRU, TinyMLPEncoder
+from .models import DualStreamEncoder, FastGRU
 
 
 def build_encoder(
     args: argparse.Namespace,
     device: torch.device,
-) -> tuple[DualStreamEncoder | FastGRU | TinyMLPEncoder, int]:
-    """
-    Instantiate the encoder chosen on the command line.
-    """
-    if args.encoder == "baseline":
-        encoder = TinyMLPEncoder(hidden_size=64).to(device)
-        encoder_dim = 64
-
-    elif args.encoder == "fast_gru":
+) -> tuple[FastGRU | DualStreamEncoder, int]:
+    """Instantiate the encoder specified by args.encoder."""
+    if args.encoder == "fast_gru":
         freeze_backbone = getattr(args, "freeze_backbone", False)
         encoder = FastGRU(hidden_size=128, freeze_backbone=freeze_backbone).to(device)
-        encoder_dim = 128
+        encoder_dim = encoder.output_dim
 
     elif args.encoder == "dual_stream":
         encoder = DualStreamEncoder(
@@ -29,6 +23,9 @@ def build_encoder(
         encoder_dim = encoder.output_dim
 
     else:
-        raise ValueError(f"Unknown encoder: {args.encoder!r}")
+        raise ValueError(
+            f"Unknown encoder: {args.encoder!r}. "
+            "Choose one of: 'fast_gru', 'dual_stream'."
+        )
 
     return encoder, encoder_dim
