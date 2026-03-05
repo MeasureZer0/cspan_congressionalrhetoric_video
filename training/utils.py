@@ -22,7 +22,7 @@ def default_paths() -> tuple[Path, Path, Path, Path]:
     script_dir = Path(__file__).resolve().parent
     project_root = script_dir.parent
     data_dir = project_root / "data"
-    img_dir = data_dir / "self-supervised"
+    img_dir = data_dir / "processed/frame_skip_30"
     csv_file = data_dir / "labels.csv"
     weights_dir = data_dir / "weights"
     logs_dir = project_root / "logs"

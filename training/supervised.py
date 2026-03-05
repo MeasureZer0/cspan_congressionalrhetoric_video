@@ -13,7 +13,7 @@ from tqdm import tqdm
 from .encoder import build_encoder
 from .faces_frames_dataset import FacesFramesSupervisedDataset
 from .optimizer import build_optimizer
-from .utils import EarlyStopping, stratified_split, supervised_collate_fn
+from .utils import EarlyStopping, supervised_collate_fn
 
 
 def train_supervised(
@@ -29,12 +29,17 @@ def train_supervised(
     """
     print(f"--- SUPERVISED TRAINING with {args.encoder} ---")
 
-    full_ds = FacesFramesSupervisedDataset(csv_file, img_dir)
-    train_idx, val_idx, test_idx = stratified_split(full_ds, (0.8, 0.1, 0.1))
+    train_csv = csv_file.parent / "train.csv"
+    val_csv = csv_file.parent / "val.csv"
+    test_csv = csv_file.parent / "test.csv"
 
-    def _make_loader(indices: list[int], shuffle: bool) -> DataLoader:
+    train_ds = FacesFramesSupervisedDataset(train_csv, img_dir)
+    val_ds = FacesFramesSupervisedDataset(val_csv, img_dir)
+    test_ds = FacesFramesSupervisedDataset(test_csv, img_dir)
+
+    def _make_loader(dataset: FacesFramesSupervisedDataset, shuffle: bool) -> DataLoader:
         return DataLoader(
-            Subset(full_ds, indices),
+            dataset,
             batch_size=args.batch_size,
             shuffle=shuffle,
             collate_fn=supervised_collate_fn,
@@ -43,9 +48,9 @@ def train_supervised(
             persistent_workers=args.num_workers > 0,
         )
 
-    train_loader = _make_loader(train_idx, shuffle=True)
-    val_loader = _make_loader(val_idx, shuffle=False)
-    test_loader = _make_loader(test_idx, shuffle=False)
+    train_loader = _make_loader(train_ds, shuffle=True)
+    val_loader = _make_loader(val_ds, shuffle=False)
+    test_loader = _make_loader(test_ds, shuffle=False)
 
     model, _ = build_encoder(args, device)
 
@@ -62,7 +67,7 @@ def train_supervised(
 
     optimizer = build_optimizer(model, args)
 
-    class_counts = np.bincount([int(label.item()) for _, _, label in full_ds])
+    class_counts = np.bincount([int(label.item()) for _, _, label in train_ds])
     weights = 1.0 / torch.tensor(class_counts, dtype=torch.float)
     weights /= weights.sum()
     criterion = nn.CrossEntropyLoss(weight=weights.to(device))
