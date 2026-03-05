@@ -90,7 +90,7 @@ def train_supervised(
     weights /= weights.sum()
     criterion = nn.CrossEntropyLoss(weight=weights.to(device))
 
-    early_stopping = EarlyStopping(patience=15, min_delta=0.0001)
+    early_stopping = EarlyStopping(patience=7, min_delta=0.0001)
 
     best_val_acc = 0.0
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

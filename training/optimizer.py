@@ -43,11 +43,11 @@ def build_optimizer(
 
         param_groups = [
             {"params": face_enc.backbone.parameters(), "lr": 1e-5},
-            {"params": face_enc.gru.parameters(), "lr": 1e-4},
-            {"params": face_enc.attention.parameters(), "lr": 1e-4},
-            {"params": dual.pose_encoder.parameters(), "lr": 1e-4},
-            {"params": dual.fusion.parameters(), "lr": 1e-3},
-            {"params": dual.classifier.parameters(), "lr": 1e-3},
+            {"params": face_enc.gru.parameters(), "lr": 5e-5},
+            {"params": face_enc.attention.parameters(), "lr": 5e-5},
+            {"params": dual.pose_encoder.parameters(), "lr": 5e-5},
+            {"params": dual.fusion.parameters(), "lr": 1e-4},
+            {"params": dual.classifier.parameters(), "lr": 1e-4},
         ]
         return torch.optim.Adam(param_groups, weight_decay=1e-4)
 
