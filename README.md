@@ -1,6 +1,8 @@
 # The Data Mine 2025/2026 Congressional Rhetoric - Video Team
 
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
+[![Pyright](https://github.com/MeasureZer0/f2025_s2026_wl_cspan_congressionalrhetoric_video/actions/workflows/pyright.yml/badge.svg?branch=main)](https://github.com/MeasureZer0/f2025_s2026_wl_cspan_congressionalrhetoric_video/actions/workflows/pyright.yml)
+[![Ruff](https://github.com/MeasureZer0/f2025_s2026_wl_cspan_congressionalrhetoric_video/actions/workflows/ruff.yml/badge.svg?branch=main)](https://github.com/MeasureZer0/f2025_s2026_wl_cspan_congressionalrhetoric_video/actions/workflows/ruff.yml)
 
 This repository contains the code and resources for the video team working on the Data Mine 2025/2026 Congressional Rhetoric project. The team is responsible for analyzing speeches from members of the congress to find out whether the sentiment is positive, negative or neutral.
 
