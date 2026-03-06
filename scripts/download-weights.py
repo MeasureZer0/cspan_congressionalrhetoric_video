@@ -36,7 +36,8 @@ def download_file(url: str, save_path: str) -> None:
 if __name__ == "__main__":
     # Direct download
     urls = [
-        "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+        "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+        "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26m-pose.pt",
     ]
     # Compute a path relative to this script
     script_dir = os.path.dirname(os.path.realpath(__file__))
