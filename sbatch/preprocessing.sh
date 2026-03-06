@@ -6,6 +6,7 @@
 #SBATCH -A cis220051       # The TDM account to charge for this. Don't change.
 #SBATCH -p shared          # Partition to use.
 
+# These three lines "load" the TDM python.  Almost always keep them.
 module use /anvil/projects/tdm/opt/core
 module load tdm
 module load python/seminar r/seminar
