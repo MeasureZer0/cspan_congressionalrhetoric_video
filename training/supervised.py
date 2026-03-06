@@ -49,7 +49,8 @@ def train_supervised(
 
     n_orig = len(train_ds) // aug_multiplier
     print(
-        f"Train: {len(train_ds)} ({n_orig} original × {aug_multiplier}) | Val: {len(val_ds)} | Test: {len(test_ds)}"
+        f"Train: {len(train_ds)} ({n_orig} original × {aug_multiplier})",
+        f"| Val: {len(val_ds)} | Test: {len(test_ds)}",
     )
 
     def _make_loader(

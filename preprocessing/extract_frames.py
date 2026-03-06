@@ -44,7 +44,6 @@ def extract_frames(
 
     max_frames = 120
 
-
     while True:
         ret, frame = cap.read()
 

@@ -18,7 +18,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 YOLO_WEIGHTS = PROJECT_ROOT / "data" / "weights" / "yolo26m-pose.pt"
 
 
-def _get_pose_model():
+def _get_pose_model():  # noqa: ANN202
     """Lazily load YOLOv8-nano pose model (one instance per process)."""
     global _pose_model
     if _pose_model is None:
@@ -28,7 +28,7 @@ def _get_pose_model():
     return _pose_model
 
 
-def _extract_best_person(results, frame_h: int, frame_w: int) -> torch.Tensor:
+def _extract_best_person(results, frame_h: int, frame_w: int) -> torch.Tensor:  # noqa: ANN001
     """
     From a YOLO result pick the person whose bounding-box centre is closest
     to the horizontal centre of the frame.
