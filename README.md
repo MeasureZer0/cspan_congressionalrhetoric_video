@@ -122,7 +122,7 @@ Below you can find the full arguments list.
 ### Preprocessing
 
 ```bash
-❯ python preprocessing/preprocess.py -h
+-> python preprocessing/preprocess.py -h
 usage: preprocess.py [-h] [--data-dir DATA_DIR] [--label-file LABEL_FILE]
                      [--out-dir OUT_DIR] [--frame-skip FRAME_SKIP]
                      [--size SIZE SIZE] [--margin MARGIN]
@@ -147,7 +147,7 @@ options:
 ### Training
 
 ```bash
-❯ python -m training.train -h
+-> python -m training.train -h
 usage: train.py [-h] --mode {ssl,supervised}
                 [--encoder {fast_gru,dual_stream}] [--epochs EPOCHS]
                 [--num-workers NUM_WORKERS] [--batch-size BATCH_SIZE]
