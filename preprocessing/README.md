@@ -1,177 +1,104 @@
 # Video Preprocessing Pipeline
 
-This module handles video preprocessing for the congressional rhetoric project, including face detection, cropping, resizing, and optical flow computation.
+This module converts raw videos into aligned face and pose tensors used by training.
 
 ## Quick Start
 
-Run preprocessing with default settings:
-
 ```bash
-python preprocessing/preprocess.py
+python preprocessing/preprocess.py --purge --frame-skip 30
 ```
 
-Run with augmentation enabled:
+## Flow
 
-```bash
-python preprocessing/preprocess.py --use_augmentation
+```mermaid
+flowchart LR
+  A["labels.csv + data/raw_videos"] --> B["preprocess.py"]
+  B --> C["extract_frames.py"]
+  C --> D["Center crop by crop_width_ratio"]
+  D --> E["YuNet: pick most central face"]
+  E --> F["Resize and stack -> *_faces.pt"]
+  D --> G["YOLO pose extraction"]
+  G --> H["Stack keypoints -> *_pose.pt"]
 ```
 
-Run with custom settings:
+## What Happens Per Video
+
+1. Frames are sampled every `frame_skip` frames.
+2. Start and end portions of each video are skipped (up to 5 seconds each side).
+3. At most 120 sampled frames are kept.
+4. Each sampled frame is center-cropped by `crop_width_ratio`.
+5. YuNet detects faces; the most central face is selected, cropped, margin-expanded, resized.
+6. Pose keypoints are extracted from the same aligned frames.
+7. Two tensors are saved: `*_faces.pt` and `*_pose.pt`.
+
+Videos with no extracted frames or no detected faces are skipped.
+
+## Configuration
+
+### `PreprocessingConfig` (`config.py`)
+
+- Paths: `data_dir`, `label_file`, `out_dir`
+- Processing: `frame_skip`, `size`, `margin`, `crop_width_ratio`
+- Execution: `purge`, `max_workers`
+
+Defaults:
+
+- `data_dir`: `data/raw_videos`
+- `label_file`: `data/labels.csv`
+- `out_dir`: `data/processed/frame_skip_<frame_skip>`
+- `size`: `(128, 128)`
+- `frame_skip`: `30`
+
+### `FaceDetectionConfig` (`config.py`)
+
+- `model_path`: `data/weights/face_detection_yunet_2023mar.onnx`
+- `input_size`: `(768, 576)`
+- `score_threshold`: `0.9`
+- `nms_threshold`: `0.3`
+- `top_k`: `5000`
+
+## CLI Arguments
 
 ```bash
-python preprocessing/preprocess.py \
-  --frame_skip 15 \
-  --use_augmentation \
-  --augmentation_probability 0.7 \
-  --rotation_degrees 15.0
+python preprocessing/preprocess.py -h
 ```
 
-## Configuration System
-
-The preprocessing pipeline uses a clean, typed configuration system with three main config classes:
-
-### `PreprocessingConfig`
-
-Main configuration for the preprocessing pipeline:
-
-- **Paths**: `data_dir`, `label_file`, `out_dir`
-- **Processing**: `frame_skip`, `size`, `margin`, `crop_width_ratio`
-- **Execution**: `purge`, `max_workers`
-- **Augmentation**: `augmentation` (AugmentationConfig)
-
-### `AugmentationConfig`
-
-Configuration for data augmentation:
-
-- `enabled`: Whether to use augmentation (default: False)
-- `rotation_degrees`: Max rotation in degrees (default: 10.0)
-- `brightness`: Brightness jitter factor (default: 0.2)
-- `contrast`: Contrast jitter factor (default: 0.2)
-- `saturation`: Saturation jitter factor (default: 0.2)
-- `hue`: Hue jitter factor (default: 0.1)
-- `probability`: Probability of augmenting each video (default: 0.5)
-
-### `FaceDetectionConfig`
-
-Configuration for YuNet face detector:
-
-- `model_path`: Path to ONNX model
-- `input_size`: Input size for detector (default: 768x576)
-- `score_threshold`: Confidence threshold (default: 0.9)
-- `nms_threshold`: NMS threshold (default: 0.3)
-- `top_k`: Max detections (default: 5000)
-
-## Command Line Arguments
-
-### Input/Output
-
-- `--data_dir PATH`: Directory containing raw videos
-- `--label_file PATH`: CSV file with video labels
-- `--out_dir PATH`: Output directory for preprocessed tensors
-
-### Processing Parameters
-
-- `--frame_skip N`: Process every N-th frame (default: 30)
-- `--size H W`: Target size for face tensors (default: 224 224)
-- `--margin FLOAT`: Margin around detected faces (default: 0.1)
-- `--crop_width_ratio FLOAT`: Width ratio for center crop (default: 0.5)
-
-### Execution Options
-
-- `--purge`: Delete existing outputs before processing
-- `--max_workers N`: Max parallel workers (default: CPU count)
-
-### Augmentation Options
-
-- `--use_augmentation`: Enable augmentation
-- `--rotation_degrees FLOAT`: Max rotation (default: 10.0)
-- `--brightness FLOAT`: Brightness jitter (default: 0.2)
-- `--contrast FLOAT`: Contrast jitter (default: 0.2)
-- `--saturation FLOAT`: Saturation jitter (default: 0.2)
-- `--hue FLOAT`: Hue jitter (default: 0.1)
-- `--augmentation_probability FLOAT`: Aug probability (default: 0.5)
-
-## Pipeline Overview
-
-1. **Extract frames** from video at specified `frame_skip` rate
-2. **Center crop** frames by `crop_width_ratio` to focus on speaker
-3. **Detect faces** using YuNet detector
-4. **Crop and resize** detected faces with optional margin
-5. **Apply augmentation** (if enabled) with consistent params per video
-6. **Compute optical flow** between augmented consecutive frames
-7. **Save tensors** as `.pt` files (faces and flows)
-
-## Augmentation Behavior
-
-When augmentation is enabled:
-
-- Each video has a `probability` chance of being augmented
-- If augmented, **all frames in the video get the same transformation**
-  - Same rotation angle
-  - Same brightness/contrast/saturation/hue adjustments
-- Optical flow is computed **after** augmentation
-- This ensures temporal consistency within each video
+- `--data-dir PATH`
+- `--label-file PATH`
+- `--out-dir PATH`
+- `--frame-skip INT`
+- `--size H W`
+- `--margin FLOAT`
+- `--crop-width-ratio FLOAT`
+- `--purge`
+- `--max-workers INT`
 
 ## Output Structure
 
 ```
-data/faces/frame_skip_30/
-├── 578982906_faces.pt
-├── 578982906_flows.pt
-├── 578984029_faces.pt
-├── 578984029_flows.pt
+data/processed/frame_skip_30/
+├── <video_stem>_faces.pt
+├── <video_stem>_pose.pt
 └── ...
 ```
 
-Each file contains:
+- `*_faces.pt`: tensor shape `[T, 3, H, W]`
+- `*_pose.pt`: tensor shape `[T, 17, 3]` (`x_norm`, `y_norm`, `confidence`)
 
-- `*_faces.pt`: Tensor of shape `(N, 3, H, W)` with N face frames
-- `*_flows.pt`: Tensor of shape `(N, 2, H, W)` with N-1 optical flows
+## Requirements
+
+- YuNet weights: `data/weights/face_detection_yunet_2023mar.onnx`
+- Pose weights: `data/weights/yolo26m-pose.pt`
+- Python package: `ultralytics` (used by `extract_pose.py`)
 
 ## Module Structure
 
 ```
 preprocessing/
-├── config.py              # Configuration dataclasses
-├── preprocess.py          # Main CLI entry point
-├── crop_faces.py          # Core preprocessing logic
-├── frame_augmentation.py  # Augmentation implementation
-├── extract_frames.py      # Video frame extraction
-├── raft_optical_flow.py   # Optical flow computation
-└── README.md              # This file
+├── config.py
+├── preprocess.py
+├── crop_faces.py
+├── extract_frames.py
+├── extract_pose.py
+└── README.md
 ```
-
-## Examples
-
-### Basic preprocessing without augmentation
-
-```bash
-python preprocessing/preprocess.py
-```
-
-### Preprocessing with augmentation
-
-```bash
-python preprocessing/preprocess.py \
-  --use_augmentation \
-  --augmentation_probability 0.5
-```
-
-### Aggressive augmentation
-
-```bash
-python preprocessing/preprocess.py \
-  --use_augmentation \
-  --augmentation_probability 0.8 \
-  --rotation_degrees 15.0 \
-  --brightness 0.3 \
-  --contrast 0.3
-```
-
-## Notes
-
-- Augmentation is applied **before** optical flow computation for realistic flow data
-- All frames in a video receive identical augmentation parameters for temporal consistency
-- The face detector focuses on the most central face in each frame
-- Videos without detectable faces are skipped with a warning
-- Processing is parallelized across videos using `ProcessPoolExecutor`
