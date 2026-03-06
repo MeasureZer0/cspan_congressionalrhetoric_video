@@ -8,17 +8,25 @@ This repository contains the code and resources for the video team working on th
 
 ```mermaid
 flowchart LR
-  A["Input: face frames (B x T x 3 x H x W)"] --> B["FastGRU face encoder (ResNet18 + GRU + attention)"]
-  C["Input: pose keypoints (B x T x 17 x 3)"] --> D["PoseGRU encoder (upper-body keypoints + GRU + attention)"]
+  A["Faces input<br/>(B x T x 3 x H x W)"] --> B["Face stream: FastGRU<br/>(ResNet18 -> GRU -> temporal attention)"]
+  C["Pose input<br/>(B x T x 17 x 3)"] --> D["Pose stream: PoseGRU<br/>(upper-body keypoints -> GRU -> temporal attention)"]
+
   B --> E["Face embedding (B x F)"]
   D --> F["Pose embedding (B x P)"]
-  E --> G["Late fusion MLP"]
+
+  E --> G["Fusion MLP"]
   F --> G
-  G --> H["Classifier"]
-  H --> I["Output logits (B x 3): negative / neutral / positive"]
+
+  G --> H["Classifier (Linear)"]
+  H --> I["Output logits (B x 3)<br/>negative / neutral / positive"]
 ```
 
-The default model is a dual-stream encoder: one stream processes face-frame sequences and the other processes pose keypoint sequences. Their embeddings are fused and classified into three sentiment classes.
+- The model has two parallel streams: one for face frames, one for pose keypoints.
+- The face stream uses a CNN backbone (`ResNet18`) to encode each frame, then a GRU to model time.
+- The pose stream uses keypoint sequences (`17 x 3`) and a GRU to model motion/body dynamics.
+- Both streams apply temporal attention to summarize variable-length sequences into fixed-size embeddings.
+- Face and pose embeddings are concatenated and passed through a fusion MLP.
+- A final classifier predicts one of 3 sentiment classes per video clip.
 
 You can train two encoder variants:
 
