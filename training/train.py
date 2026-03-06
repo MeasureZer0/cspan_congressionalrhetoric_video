@@ -21,18 +21,25 @@ if __name__ == "__main__":
     parser.add_argument(
         "--encoder",
         type=str,
-        choices=["baseline", "fast_gru"],
-        default="fast_gru",
+        choices=["fast_gru", "dual_stream"],
+        default="dual_stream",
     )
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--load-ssl", action="store_true")
-    parser.add_argument("--frame-skip", type=int, default=15)
+    parser.add_argument("--frame-skip", type=int, default=30)
     parser.add_argument("--subset", type=int, default=None)
-    parser.add_argument("--use-memory-bank", action="store_true")
-    parser.add_argument("--bank-size", type=int, default=32768)
     parser.add_argument("--temperature", type=float, default=0.5)
+    parser.add_argument(
+        "--freeze-backbone", action="store_true", help="Freeze ResNet backbone"
+    )
+    parser.add_argument(
+        "--aug-multiplier",
+        type=int,
+        default=3,
+        help="How many augmented copies of each train sample per epoch",
+    )
 
     args = parser.parse_args()
 
