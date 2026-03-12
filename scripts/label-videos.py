@@ -361,12 +361,12 @@ class VideoLabelerApp:
         self.paused = not self.paused
         self.player.pause()
 
-    def on_slider_press(self, event: Any) -> str:
+    def on_slider_press(self, event: tk.Event) -> str:
         self._slider_dragging = True
         self._set_slider_from_x(event.x)
         return "break"
 
-    def on_slider_drag(self, event: Any) -> str:
+    def on_slider_drag(self, event: tk.Event) -> str:
         if self._slider_dragging:
             self._set_slider_from_x(event.x)
         return "break"
@@ -379,7 +379,7 @@ class VideoLabelerApp:
         self.slider_var.set(target_ms)
         self.update_timeline_label(target_ms, int(max_value))
 
-    def on_slider_release(self, _event: Any) -> None:
+    def on_slider_release(self, _event: object) -> None:
         self._slider_dragging = False
         self.seek_to_ms(int(self.slider_var.get()))
 
@@ -469,9 +469,10 @@ class VideoLabelerApp:
         basename = self.current_path.name
         existing = self.labels.get(basename)
         existing_text = f" | already labeled: {existing[0]}" if existing else ""
+        controls_text = " | Drag slider or Left/Right to seek | Space=pause"
         self.info_var.set(
             f"{self.index + 1}/{len(self.videos)} \
-                | {basename}{existing_text} | Drag slider or Left/Right to seek | Space=pause"
+                | {basename}{existing_text}{controls_text}"
         )
 
     def label_current(self, label: str) -> None:
