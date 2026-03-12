@@ -29,6 +29,16 @@ VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm"}
 IS_MAC = sys.platform.startswith("darwin")
 IS_WIN = sys.platform.startswith("win")
 IS_LINUX = sys.platform.startswith("linux")
+SEEK_STEP_MS = 5_000
+
+
+def format_ms(ms: int) -> str:
+    total_seconds = max(0, ms // 1000)
+    minutes, seconds = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
 
 
 # Minimal copy of the tkvlc macOS helper: VLC needs an NSView, not the raw Tk id.
@@ -156,11 +166,14 @@ class VideoLabelerApp:
         self.current_path: Optional[Path] = None
         self.paused = False
         self.pending_action: Optional[str] = None
+        self._slider_dragging = False
 
         self.root = tk.Tk()
         self.root.title("Video Labeler (TkVLC)")
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
+        self.slider_var = tk.DoubleVar(master=self.root, value=0.0)
+        self.timeline_var = tk.StringVar(master=self.root, value="0:00 / 0:00")
 
         self.video_window: Optional[tk.Toplevel] = None
         video_parent: tk.Misc = self.root
@@ -196,8 +209,52 @@ class VideoLabelerApp:
             row=1, column=0, padx=10, pady=(0, 8), sticky="w"
         )
 
+        timeline = ttk.Frame(self.root)
+        timeline.grid(row=2, column=0, padx=10, pady=(0, 8), sticky="ew")
+        timeline.columnconfigure(0, weight=1)
+
+        self.timeline_scale = tk.Scale(
+            timeline,
+            from_=0,
+            to=1000,
+            orient="horizontal",
+            showvalue=False,
+            highlightthickness=0,
+            variable=self.slider_var,
+            command=self.on_slider_change,
+        )
+        self.timeline_scale.grid(row=0, column=0, sticky="ew")
+        self.timeline_scale.bind("<ButtonPress-1>", self.on_slider_press)
+        self.timeline_scale.bind("<B1-Motion>", self.on_slider_drag)
+        self.timeline_scale.bind("<ButtonRelease-1>", self.on_slider_release)
+
+        ttk.Label(timeline, textvariable=self.timeline_var).grid(
+            row=1, column=0, sticky="e"
+        )
+
+        playback_buttons = ttk.Frame(self.root)
+        playback_buttons.grid(row=3, column=0, padx=10, pady=(0, 8), sticky="ew")
+        for col in range(3):
+            playback_buttons.columnconfigure(col, weight=1)
+
+        ttk.Button(
+            playback_buttons,
+            text="Back 5s [Left]",
+            command=lambda: self.set_action("seek_back"),
+        ).grid(row=0, column=0, padx=4, sticky="ew")
+        ttk.Button(
+            playback_buttons,
+            text="Pause [Space]",
+            command=self.toggle_pause,
+        ).grid(row=0, column=1, padx=4, sticky="ew")
+        ttk.Button(
+            playback_buttons,
+            text="Forward 5s [Right]",
+            command=lambda: self.set_action("seek_forward"),
+        ).grid(row=0, column=2, padx=4, sticky="ew")
+
         buttons = ttk.Frame(self.root)
-        buttons.grid(row=2, column=0, padx=10, pady=(0, 10), sticky="ew")
+        buttons.grid(row=4, column=0, padx=10, pady=(0, 10), sticky="ew")
         for col in range(6):
             buttons.columnconfigure(col, weight=1)
 
@@ -226,6 +283,8 @@ class VideoLabelerApp:
         self.root.bind("<KeyPress-s>", lambda _e: self.set_action("skip"))
         self.root.bind("<KeyPress-b>", lambda _e: self.set_action("back"))
         self.root.bind("<KeyPress-q>", lambda _e: self.set_action("quit"))
+        self.root.bind("<Left>", lambda _e: self.set_action("seek_back"))
+        self.root.bind("<Right>", lambda _e: self.set_action("seek_forward"))
         self.root.bind("<space>", lambda _e: self.toggle_pause())
         self.root.protocol("WM_DELETE_WINDOW", lambda: self.set_action("quit"))
         if self.video_window is not None:
@@ -241,6 +300,10 @@ class VideoLabelerApp:
             self.video_window.bind("<KeyPress-s>", lambda _e: self.set_action("skip"))
             self.video_window.bind("<KeyPress-b>", lambda _e: self.set_action("back"))
             self.video_window.bind("<KeyPress-q>", lambda _e: self.set_action("quit"))
+            self.video_window.bind("<Left>", lambda _e: self.set_action("seek_back"))
+            self.video_window.bind(
+                "<Right>", lambda _e: self.set_action("seek_forward")
+            )
             self.video_window.bind("<space>", lambda _e: self.toggle_pause())
 
         self.root.update_idletasks()
@@ -298,12 +361,95 @@ class VideoLabelerApp:
         self.paused = not self.paused
         self.player.pause()
 
+    def on_slider_press(self, event: tk.Event) -> str:
+        self._slider_dragging = True
+        self._set_slider_from_x(event.x)
+        return "break"
+
+    def on_slider_drag(self, event: tk.Event) -> str:
+        if self._slider_dragging:
+            self._set_slider_from_x(event.x)
+        return "break"
+
+    def _set_slider_from_x(self, x_pos: int) -> None:
+        width = max(1, self.timeline_scale.winfo_width())
+        max_value = float(self.timeline_scale.cget("to"))
+        click_x = min(max(x_pos, 0), width)
+        target_ms = int((click_x / width) * max_value)
+        self.slider_var.set(target_ms)
+        self.update_timeline_label(target_ms, int(max_value))
+
+    def on_slider_release(self, _event: object) -> None:
+        self._slider_dragging = False
+        self.seek_to_ms(int(self.slider_var.get()))
+
+    def on_slider_change(self, value: str) -> None:
+        if self._slider_dragging:
+            self.update_timeline_label(int(float(value)))
+
+    def seek_to_ms(self, target_ms: int) -> None:
+        if self.current_path is None:
+            return
+
+        length_ms = self.player.get_length()
+        if length_ms is not None and length_ms > 0:
+            target_ms = min(max(0, target_ms), max(0, length_ms - 250))
+            self.timeline_scale.configure(to=length_ms)
+        else:
+            target_ms = max(0, target_ms)
+
+        self.player.set_time(target_ms)
+        self.slider_var.set(target_ms)
+        self.update_timeline_label(target_ms, length_ms)
+
+    def seek_relative(self, delta_ms: int) -> None:
+        if self.current_path is None:
+            return
+
+        current_ms = self.player.get_time()
+        if current_ms is None or current_ms < 0:
+            current_ms = 0
+
+        target_ms = max(0, current_ms + delta_ms)
+        length_ms = self.player.get_length()
+        if length_ms is not None and length_ms > 0:
+            target_ms = min(target_ms, max(0, length_ms - 250))
+
+        self.seek_to_ms(target_ms)
+
+    def update_timeline_label(
+        self, current_ms: int, length_ms: Optional[int] = None
+    ) -> None:
+        if length_ms is None:
+            length_ms = self.player.get_length()
+        length_text = format_ms(length_ms) if length_ms and length_ms > 0 else "0:00"
+        self.timeline_var.set(f"{format_ms(current_ms)} / {length_text}")
+
+    def sync_timeline(self) -> None:
+        if self.current_path is None or self._slider_dragging:
+            return
+
+        current_ms = self.player.get_time()
+        if current_ms is None or current_ms < 0:
+            current_ms = 0
+
+        length_ms = self.player.get_length()
+        if length_ms is not None and length_ms > 0:
+            self.timeline_scale.configure(to=length_ms)
+            current_ms = min(current_ms, length_ms)
+
+        self.slider_var.set(current_ms)
+        self.update_timeline_label(current_ms, length_ms)
+
     def close_video(self) -> None:
         try:
             self.player.stop()
         except Exception:
             pass
         self.current_path = None
+        self.slider_var.set(0)
+        self.timeline_scale.configure(to=1000)
+        self.update_timeline_label(0, 0)
 
     def open_video(self, path: Path) -> None:
         self.close_video()
@@ -314,6 +460,8 @@ class VideoLabelerApp:
         if self.player.play() == -1:
             raise RuntimeError(f"Failed to open video: {path}")
         self.paused = False
+        self.slider_var.set(0)
+        self.update_timeline_label(0, 0)
 
     def update_info(self) -> None:
         if self.current_path is None:
@@ -321,9 +469,10 @@ class VideoLabelerApp:
         basename = self.current_path.name
         existing = self.labels.get(basename)
         existing_text = f" | already labeled: {existing[0]}" if existing else ""
+        controls_text = " | Drag slider or Left/Right to seek | Space=pause"
         self.info_var.set(
             f"{self.index + 1}/{len(self.videos)} \
-                | {basename}{existing_text} | Space=pause"
+                | {basename}{existing_text}{controls_text}"
         )
 
     def label_current(self, label: str) -> None:
@@ -365,6 +514,14 @@ class VideoLabelerApp:
             self.go_back()
             return True
 
+        if action == "seek_back":
+            self.seek_relative(-SEEK_STEP_MS)
+            return False
+
+        if action == "seek_forward":
+            self.seek_relative(SEEK_STEP_MS)
+            return False
+
         if action == "quit":
             self.close_video()
             self.root.quit()
@@ -404,6 +561,8 @@ class VideoLabelerApp:
 
                     if self.current_path is None:
                         return
+
+                    self.sync_timeline()
 
                     if self.paused:
                         time.sleep(0.02)
