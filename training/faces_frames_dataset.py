@@ -188,3 +188,67 @@ class SimCLRDataset(Dataset):
             self.pose_transform(pose),
             self.pose_transform(pose),
         )
+
+
+class InferenceDataset(Dataset):
+    def __init__(
+        self,
+        csv_file: Path,
+        img_dir: Path,
+        min_frames: int = 8,
+        max_frames: int = 120,
+        transform: Optional[Callable] = None,
+    ) -> None:
+        self.img_dir = Path(img_dir)
+        self.csv = pd.read_csv(csv_file)
+        self.min_frames = min_frames
+        self.max_frames = max_frames
+        self.transform = transform
+
+        self.samples = self._build_inference_index()
+
+    def _build_inference_index(self) -> list[str]:
+        index = []
+        for i in range(len(self.csv)):
+            video_name = str(self.csv.iloc[i, 0])
+            stem = Path(video_name).stem
+
+            if (self.img_dir / f"{stem}_faces.pt").exists():
+                index.append(stem)
+            else:
+                print(
+                    f"Warning: File {stem}_faces.pt not found in {self.img_dir}. Skipping."
+                )
+        return index
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, str]:
+        stem = self.samples[idx]
+
+        faces = torch.load(self.img_dir / f"{stem}_faces.pt", weights_only=True)
+        pose_path = self.img_dir / f"{stem}_pose.pt"
+
+        if pose_path.exists():
+            pose = torch.load(pose_path, weights_only=True)
+        else:
+            pose = torch.zeros(faces.shape[0], 17, 3)
+
+        min_t = min(faces.shape[0], pose.shape[0])
+        faces, pose = faces[:min_t], pose[:min_t]
+
+        n = faces.shape[0]
+        if n < self.min_frames:
+            repeat = int(np.ceil(self.min_frames / n))
+            faces = faces.repeat(repeat, 1, 1, 1)[: self.min_frames]
+            pose = pose.repeat(repeat, 1, 1)[: self.min_frames]
+
+        if faces.shape[0] > self.max_frames:
+            faces = faces[: self.max_frames]
+            pose = pose[: self.max_frames]
+
+        if self.transform is not None:
+            faces = self.transform(faces)
+
+        return faces, pose, stem
