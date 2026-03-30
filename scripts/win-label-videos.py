@@ -6,7 +6,8 @@ FIXES:
   - No duplicate labels in CSV (rewrites entire file on each label)
   - Preserves original filename capitalization in CSV
   - Saves timestamp to CSV
-  - Dynamically skips already-labeled videos during navigation (_advance + _load_current)
+  - Dynamically skips already-labeled videos
+   during navigation (_advance + _load_current)
   - Skips labeled videos even when encountered via _back → re-advance
 
 # Based heavily on https://github.com/oaubert/python-vlc/blob/master/examples/tkvlc.py
@@ -29,7 +30,7 @@ from ctypes import c_void_p, cdll
 from ctypes.util import find_library
 from pathlib import Path
 from tkinter import messagebox, ttk
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 if sys.platform.startswith("win"):
     VLC_PATH = r"C:\Program Files\VideoLAN\VLC"
@@ -193,7 +194,8 @@ class VLCWorker(threading.Thread):
     """Serialises all blocking VLC calls onto a single background thread.
 
     Commands are plain dicts:
-        {"cmd": "load",  "path": Path, "attach_fn": callable, "done": callable, "error_fn": callable}
+        {"cmd": "load",  "path": Path, "attach_fn": callable, "done": callable,
+         "error_fn": callable}
         {"cmd": "stop",  "done": callable | None}
         {"cmd": "seek",  "ms": int}
         {"cmd": "pause"}
@@ -259,7 +261,7 @@ class VLCWorker(threading.Thread):
                         self.root.after(0, done)
                 except Exception as exc:
                     if error_fn:
-                        self.root.after(0, lambda e=exc: error_fn(e))
+                        self.root.after(0, lambda e=exc, fn=error_fn: fn(e))
 
             elif action == "seek":
                 try:
@@ -425,7 +427,7 @@ class VideoLabelerApp:
 
         self._label_buttons: List[ttk.Button] = []
 
-        def _btn(text: str, cmd, col: int) -> ttk.Button:
+        def _btn(text: str, cmd: Callable[[], None], col: int) -> ttk.Button:
             b = ttk.Button(label_row, text=text, command=cmd)
             b.grid(row=0, column=col, padx=4, sticky="ew")
             self._label_buttons.append(b)

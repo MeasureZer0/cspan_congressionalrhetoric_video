@@ -217,7 +217,8 @@ class InferenceDataset(Dataset):
                 index.append(stem)
             else:
                 print(
-                    f"Warning: File {stem}_faces.pt not found in {self.img_dir}. Skipping."
+                    f"Warning: File {stem}_faces.pt not \
+                     found in {self.img_dir}. Skipping."
                 )
         return index
 
