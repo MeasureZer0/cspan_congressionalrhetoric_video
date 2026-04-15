@@ -1,6 +1,6 @@
-"""
-PyTorch Datasets for loading face tensors + pose keypoints from .pt files.
-Supports SSL (unlabelled) and supervised tasks.
+"""PyTorch datasets for face tensor + pose keypoint sequences.
+
+Supports both self-supervised (SSL) and supervised training workflows.
 """
 
 from collections.abc import Callable
@@ -14,10 +14,7 @@ from torch.utils.data import Dataset
 
 
 class FacesFramesSSLDataset(Dataset):
-    """
-    Loads preprocessed face tensors and pose keypoints without labels.
-    Used as the base dataset for self-supervised methods.
-    """
+    """Load preprocessed face tensors and pose keypoints without labels."""
 
     def __init__(
         self,
@@ -28,79 +25,70 @@ class FacesFramesSSLDataset(Dataset):
         self.img_dir = Path(img_dir)
         self.min_frames = min_frames
         self.max_frames = max_frames
-        self.samples = self._build_sample()
+        self.samples = self._build_sample_list()
 
-    def _build_sample(self) -> list[str]:
-        files = sorted(self.img_dir.glob("*_faces.pt"))
-        return [f.stem.replace("_faces", "") for f in files]
+    def _build_sample_list(self) -> list[str]:
+        return [
+            f.stem.replace("_faces", "")
+            for f in sorted(self.img_dir.glob("*_faces.pt"))
+        ]
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Returns
-        -------
-        faces : torch.Tensor  [T, 3, H, W]
-        pose  : torch.Tensor  [T, 17, 3]   (x_norm, y_norm, confidence)
-        """
+        """Return (faces [T,3,H,W], pose [T,17,3])."""
         stem = self.samples[idx]
 
         try:
-            faces = torch.load(self.img_dir / f"{stem}_faces.pt", weights_only=True)
+            faces: torch.Tensor = torch.load(
+                self.img_dir / f"{stem}_faces.pt", weights_only=True
+            )
         except Exception:
-            print(f"Corrupted file: {stem}_faces.pt")
+            print(f"[warn] Corrupted file: {stem}_faces.pt — skipping")
             return self.__getitem__((idx + 1) % len(self))
 
         pose_path = self.img_dir / f"{stem}_pose.pt"
-        if pose_path.exists():
-            try:
-                pose = torch.load(pose_path, weights_only=True)
-            except Exception:
-                pose = torch.zeros(faces.shape[0], 17, 3)
-        else:
+        try:
+            pose: torch.Tensor = torch.load(pose_path, weights_only=True)
+        except Exception:
             pose = torch.zeros(faces.shape[0], 17, 3)
 
-        # Align lengths
-        min_t = min(faces.shape[0], pose.shape[0])
-        faces = faces[:min_t]
-        pose = pose[:min_t]
+        # Align temporal lengths
+        t = min(faces.shape[0], pose.shape[0])
+        faces, pose = faces[:t], pose[:t]
 
-        # Pad short sequences
-        n = faces.shape[0]
-        if n < self.min_frames:
-            repeat = int(np.ceil(self.min_frames / n))
-            faces = faces.repeat(repeat, 1, 1, 1)[: self.min_frames]
-            pose = pose.repeat(repeat, 1, 1)[: self.min_frames]
+        # Pad sequences that are too short
+        if t < self.min_frames:
+            reps = int(np.ceil(self.min_frames / t))
+            faces = faces.repeat(reps, 1, 1, 1)[: self.min_frames]
+            pose = pose.repeat(reps, 1, 1)[: self.min_frames]
 
-        # Truncate long sequences
-        if faces.shape[0] > self.max_frames:
-            faces = faces[: self.max_frames]
-            pose = pose[: self.max_frames]
+        # Truncate sequences that are too long
+        faces = faces[: self.max_frames]
+        pose = pose[: self.max_frames]
 
         return faces, pose
 
 
 class FacesFramesSupervisedDataset(Dataset):
-    """
-    Loads face tensors, pose keypoints, and integer labels from a CSV.
+    """Load face tensors, pose keypoints, and integer labels from a CSV.
 
     Parameters
     ----------
-    csv_file : Path
-        CSV with columns [video_name, label].
-    img_dir : Path
-        Directory containing *_faces.pt and *_pose.pt tensors.
-    transform : callable, optional
-        Augmentation applied to the face tensor [T, 3, H, W].
-        Pass only for the train split; leave None for val/test.
-    aug_multiplier : int
-        How many times each sample appears in the dataset.
-        With transform=None this has no effect (copies would be identical).
-        With transform set, each repeat gets independently sampled augmentation,
-        effectively growing the dataset by aug_multiplier without touching disk.
-        Default: 1 (no repetition).
+    csv_file:
+        CSV with columns ``[video_name, label]``.
+    img_dir:
+        Directory containing ``*_faces.pt`` and ``*_pose.pt`` tensors.
+    transform:
+        Augmentation applied to the face tensor ``[T, 3, H, W]``.
+        Pass only for the training split; leave ``None`` for val/test.
+    aug_multiplier:
+        How many augmented copies of each training sample appear per epoch.
+        Has no effect when *transform* is ``None``.
     """
+
+    _CLASSES = {"negative": 0, "neutral": 1, "positive": 2}
 
     def __init__(
         self,
@@ -110,22 +98,19 @@ class FacesFramesSupervisedDataset(Dataset):
         aug_multiplier: int = 1,
     ) -> None:
         self.img_dir = Path(img_dir)
-        self.csv = pd.read_csv(csv_file)
-        self.classes = {"negative": 0, "neutral": 1, "positive": 2}
+        self.df = pd.read_csv(csv_file)
         self.transform = transform
         self.aug_multiplier = aug_multiplier if transform is not None else 1
         self.samples = self._build_index()
 
     def _build_index(self) -> list[tuple[str, str]]:
-        """Build sample list, repeating each entry aug_multiplier times."""
-        base = []
-        for i in range(len(self.csv)):
-            video_name = str(self.csv.iloc[i, 0])
-            label_str = str(self.csv.iloc[i, 1]).strip()
-            stem = Path(video_name).stem
-            if (self.img_dir / f"{stem}_faces.pt").exists():
-                base.append((stem, label_str))
-
+        base = [
+            (Path(str(self.df.iloc[i, 0])).stem, str(self.df.iloc[i, 1]).strip())
+            for i in range(len(self.df))
+            if (
+                self.img_dir / f"{Path(str(self.df.iloc[i, 0])).stem}_faces.pt"
+            ).exists()
+        ]
         return base * self.aug_multiplier
 
     def __len__(self) -> int:
@@ -134,29 +119,33 @@ class FacesFramesSupervisedDataset(Dataset):
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         stem, label_str = self.samples[idx]
 
-        faces = torch.load(self.img_dir / f"{stem}_faces.pt", weights_only=True)
+        faces: torch.Tensor = torch.load(
+            self.img_dir / f"{stem}_faces.pt", weights_only=True
+        )
+
         pose_path = self.img_dir / f"{stem}_pose.pt"
-        pose = (
+        pose: torch.Tensor = (
             torch.load(pose_path, weights_only=True)
             if pose_path.exists()
             else torch.zeros(faces.shape[0], 17, 3)
         )
 
-        min_t = min(faces.shape[0], pose.shape[0])
-        faces = faces[:min_t]
-        pose = pose[:min_t]
+        t = min(faces.shape[0], pose.shape[0])
+        faces, pose = faces[:t], pose[:t]
 
         if self.transform is not None:
             faces = self.transform(faces)
 
-        label = torch.tensor(self.classes[label_str], dtype=torch.long)
+        label = torch.tensor(self._CLASSES[label_str], dtype=torch.long)
         return faces, pose, label
 
 
 class SimCLRDataset(Dataset):
-    """
-    Wraps a base SSL dataset and returns two independently-augmented views
-    of each sample for contrastive pre-training.
+    """Wrap a base SSL dataset and return two *independently* augmented views.
+
+    Both the face and pose transforms are applied twice with different random
+    seeds so that view-1 and view-2 are genuinely distinct augmentations of
+    the same sample, which is required for contrastive pre-training.
     """
 
     def __init__(
@@ -175,16 +164,13 @@ class SimCLRDataset(Dataset):
     def __getitem__(
         self, idx: int
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Returns
-        -------
-        face_v1, face_v2 : two independently augmented face sequences  [T, 3, H, W]
-        pose_v1, pose_v2 : two independently augmented pose sequences  [T, 17, 3]
-        """
+        """Return (face_v1, face_v2, pose_v1, pose_v2) — two independent views."""
         faces, pose = self.base[idx]
-        return (
-            self.face_transform(faces),
-            self.face_transform(faces),
-            self.pose_transform(pose),
-            self.pose_transform(pose),
-        )
+
+        # Call transforms separately so each gets different random parameters
+        face_v1 = self.face_transform(faces)
+        face_v2 = self.face_transform(faces)
+        pose_v1 = self.pose_transform(pose)
+        pose_v2 = self.pose_transform(pose)
+
+        return face_v1, face_v2, pose_v1, pose_v2

@@ -1,28 +1,36 @@
-"""Main preprocessing script with argument parsing."""
+"""Main preprocessing entry point."""
 
 import argparse
+import sys
 from pathlib import Path
 
-from config import PreprocessingConfig
-from crop_faces import process_videos_in_parallel
+# Allow running as a script from the project root: python preprocessing/preprocess.py
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from config import PreprocessingConfig  # noqa: E402
+from crop_faces import process_videos_in_parallel  # noqa: E402
 
 
 def parse_args() -> PreprocessingConfig:
-    """Parse command line arguments and merge with default configuration."""
     parser = argparse.ArgumentParser(
-        description="Process videos to extract face and pose tensors."
+        description="Extract face and pose tensors from raw videos."
     )
-
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--label-file", type=Path)
     parser.add_argument("--out-dir", type=Path)
     parser.add_argument("--frame-skip", type=int)
     parser.add_argument(
-        "--size", type=int, nargs=2, help="Target size for face tensors (height width)."
+        "--size",
+        type=int,
+        nargs=2,
+        metavar=("H", "W"),
+        help="Target face tensor size (height width)",
     )
     parser.add_argument("--margin", type=float)
     parser.add_argument("--crop-width-ratio", type=float)
-    parser.add_argument("--purge", action="store_true")
+    parser.add_argument(
+        "--purge", action="store_true", help="Overwrite existing output tensors"
+    )
     parser.add_argument("--max-workers", type=int)
 
     args = parser.parse_args()
@@ -36,6 +44,5 @@ def parse_args() -> PreprocessingConfig:
 
 if __name__ == "__main__":
     config = parse_args()
-    print("Preprocessing configuration:")
-    print(config)
+    print("Preprocessing configuration:\n" + str(config))
     process_videos_in_parallel(config=config)
