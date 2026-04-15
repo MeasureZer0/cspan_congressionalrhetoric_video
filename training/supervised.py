@@ -27,7 +27,8 @@ def train_supervised(
     weights_dir: Path,
     logs_dir: Path,
 ) -> None:
-    """Supervised training loop with validation-based early stopping and test evaluation."""
+    """Supervised training loop with validation-based
+    early stopping and test evaluation."""
     print(f"--- SUPERVISED TRAINING ({args.encoder}) ---")
 
     train_csv = csv_file.parent / "train.csv"

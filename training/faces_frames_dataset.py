@@ -107,7 +107,9 @@ class FacesFramesSupervisedDataset(Dataset):
         base = [
             (Path(str(self.df.iloc[i, 0])).stem, str(self.df.iloc[i, 1]).strip())
             for i in range(len(self.df))
-            if (self.img_dir / f"{Path(str(self.df.iloc[i, 0])).stem}_faces.pt").exists()
+            if (
+                self.img_dir / f"{Path(str(self.df.iloc[i, 0])).stem}_faces.pt"
+            ).exists()
         ]
         return base * self.aug_multiplier
 

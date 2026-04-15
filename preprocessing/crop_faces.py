@@ -89,7 +89,8 @@ def crop_face(
     location: Optional[Tuple[int, int, int, int]],
     margin: float,
 ) -> Optional[np.ndarray]:
-    """Crop a face from *frame* given (top, right, bottom, left), with optional margin."""
+    """Crop a face from *frame* given (top, right, bottom, left),
+    with optional margin."""
     if location is None:
         return None
 

@@ -14,7 +14,8 @@ def extract_frames(
     skip_end_ratio: float = 0.1,
     max_frames: int = 120,
 ) -> list[ndarray]:
-    """Extract up to *max_frames* frames from a video, sampling every *frame_skip* frames.
+    """Extract up to *max_frames* frames from a video,
+     sampling every *frame_skip* frames.
 
     Parameters
     ----------
