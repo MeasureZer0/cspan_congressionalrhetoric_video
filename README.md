@@ -6,21 +6,32 @@
 
 This repository contains the code and resources for the video team working on the Data Mine 2025/2026 Congressional Rhetoric project. The team is responsible for analyzing speeches from members of the congress to find out whether the sentiment is positive, negative or neutral.
 
-## Model architecture
+---
+ 
+## Table of Contents
+ 
+- [Architecture](#architecture)
+- [Data Pipeline](#data-pipeline)
+- [Quick Start](#quick-start)
+- [Training](#training)
+- [Utility Scripts](#utility-scripts)
+- [Project Layout](#project-layout)
+- [References](#references)
+
+---
+
+## Architecture
 
 ```mermaid
 flowchart LR
-  A["Faces input<br/>(B x T x 3 x H x W)"] --> B["Face stream: FastGRU<br/>(ResNet18 -> GRU -> temporal attention)"]
-  C["Pose input<br/>(B x T x 17 x 3)"] --> D["Pose stream: PoseGRU<br/>(upper-body keypoints -> GRU -> temporal attention)"]
-
-  B --> E["Face embedding (B x F)"]
-  D --> F["Pose embedding (B x P)"]
-
+  A["Faces input\n(B × T × 3 × H × W)"] --> B["Face stream\nResNet-18 → GRU → attention"]
+  C["Pose input\n(B × T × 17 × 3)"] --> D["Pose stream\nUpper-body keypoints → GRU → attention"]
+  B --> E["Face embedding (B × F)"]
+  D --> F["Pose embedding (B × P)"]
   E --> G["Fusion MLP"]
   F --> G
-
-  G --> H["Classifier (Linear)"]
-  H --> I["Output logits (B x 3)<br/>negative / neutral / positive"]
+  G --> H["Linear classifier"]
+  H --> I["Logits (B × 3)\nnegative / neutral / positive"]
 ```
 
 - The model has two parallel streams: one for face frames, one for pose keypoints.
@@ -30,10 +41,12 @@ flowchart LR
 - Face and pose embeddings are concatenated and passed through a fusion MLP.
 - A final classifier predicts one of 3 sentiment classes per video clip.
 
-You can train two encoder variants:
-
-- `dual_stream` (default): face + pose
-- `fast_gru`: face-only stream
+Two encoder variants are available:
+ 
+| Encoder | Streams | When to use |
+|---------|---------|-------------|
+| `dual_stream` *(default)* | face + pose | Best accuracy |
+| `fast_gru` | face only | Faster training / no pose data |
 
 Key files:
 
@@ -42,82 +55,65 @@ Key files:
 
 - [training/faces_frames_dataset.py](training/faces_frames_dataset.py) - datasets loading `*_faces.pt` and `*_pose.pt`
 
-## Data pipeline (detailed)
+## Data Pipeline
 
 ```mermaid
 flowchart LR
-  RV["Raw videos (data/raw_videos)"] --> PP["preprocessing/preprocess.py"]
-  LBL["labels.csv"] --> PP
-  PP --> EF["extract_frames.py (frame_skip, start/end skip, max 120)"]
-  EF --> FD["YuNet face detection + central-face crop"]
-  EF --> PE["YOLO pose extraction on aligned frames"]
-  FD --> SF["Save *_faces.pt (T x 3 x H x W)"]
-  PE --> SP["Save *_pose.pt (T x 17 x 3)"]
+  RV["data/raw_videos/"] --> PP["preprocess.py"]
+  LBL["data/labels.csv"] --> PP
+  PP --> EF["extract_frames.py\n(skip start/end, sample every N frames, cap 120)"]
+  EF --> FD["YuNet face detection\n→ central-face crop"]
+  EF --> PE["YOLO pose extraction\n→ upper-body keypoints"]
+  FD --> SF["*_faces.pt  [T, 3, H, W]"]
+  PE --> SP["*_pose.pt   [T, 17, 3]"]
   SF --> DS["FacesFrames*Dataset"]
   SP --> DS
   DS --> CL["collate_fn: pad variable-length sequences"]
-  CL --> TR["training/train.py (--mode ssl or supervised)"]
+  CL --> TR["training/train.py"]
 ```
 
-Short explanation:
+**Per-video steps:**
+ 
+1. Sample every `frame_skip` frames; skip up to 5 s at each end.
+2. Keep at most 120 frames.
+3. Centre-crop each frame to `crop_width_ratio` of its width.
+4. Detect faces with YuNet; select the most central one.
+5. Extract upper-body pose keypoints with YOLOv8-pose.
+6. Save `<stem>_faces.pt` and `<stem>_pose.pt` to `data/processed/frame_skip_<N>/`.
+**Required weights** (downloaded by `scripts/download-weights.py`):
+ 
+| File | Used by |
+|------|---------|
+| `data/weights/face_detection_yunet_2023mar.onnx` | `preprocessing/crop_faces.py` |
+| `data/weights/yolo26m-pose.pt` | `preprocessing/extract_pose.py` |
 
-- Preprocessing extracts frames, detects/crops the main face, and extracts per-frame pose keypoints.
-
-- Outputs are saved as two tensors per video stem: `*_faces.pt` and `*_pose.pt`.
-
-- Training datasets load both tensors, align sequence lengths, and pad batches with custom collate functions.
-
-Important notes:
-
-- `preprocessing/extract_pose.py` requires `data/weights/yolo26m-pose.pt`.
-- `scripts/download-weights.py` currently downloads only YuNet (`face_detection_yunet_2023mar.onnx`).
-- `training/train.py` must be run as a module: `python -m training.train ...`.
-
-## Running the code
+## Quick Start
 
 ```bash
 git clone https://github.com/MeasureZer0/cspan_congressionalrhetoric_video.git video
 cd video
-```
-
-It is a good practice to use a virtual environment. You can create one using:
-
-```bash
+ 
+# Create and activate virtual environment
 uv venv
-source .venv/bin/activate  # On Windows use `.venv\Scripts\activate`
-```
-
-Then install the required packages:
-
-```bash
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+ 
+# Install dependencies
 uv sync
-```
-
-Download required weights (they will be saved to `data/weights/`):
-
-```bash
+ 
+# Download model weights (YuNet face detector + YOLO pose)
 python scripts/download-weights.py
-```
-
-Run preprocessing:
-
-```bash
+ 
+# Preprocess videos
 python preprocessing/preprocess.py --purge --frame-skip 30
-```
-
-Run SSL pretraining:
-
-```bash
+ 
+# SSL pre-training (optional but recommended)
 python -m training.train --mode ssl --encoder dual_stream --epochs 10 --batch-size 8
-```
-
-Run supervised training:
-
-```bash
+ 
+# Supervised training
 python -m training.train --mode supervised --encoder dual_stream --epochs 20 --batch-size 8
 ```
-
-Below you can find the full arguments list.
+ 
+---
 
 ### Preprocessing
 
@@ -170,15 +166,63 @@ options:
   --aug-multiplier AUG_MULTIPLIER
                         How many augmented copies of each train sample per epoch
 ```
+## Utility Scripts
+ 
+See [`scripts/README.md`](scripts/README.md) for full documentation.
+ 
+| Script | Purpose |
+|--------|---------|
+| `scripts/download-weights.py` | Download YuNet and YOLO weights |
+| `scripts/label-videos.py` | Interactive Tk+VLC video labeling tool |
+| `scripts/move-random-videos.py` | Move/copy a random subset of videos between directories |
+| `scripts/pip-uninstall.py` | Uninstall a package and its orphaned dependencies |
+| `visualization/peek_faces.py` | Preview face tensors as an image grid |
+ 
+---
 
-## Utility scripts
+## Project Layout
+ 
+```
+.
+├── preprocessing/
+│   ├── config.py           # PreprocessingConfig, FaceDetectionConfig
+│   ├── preprocess.py       # CLI entry point
+│   ├── extract_frames.py   # Frame sampling
+│   ├── crop_faces.py       # Face detection + cropping
+│   └── extract_pose.py     # YOLO pose extraction
+├── training/
+│   ├── train.py            # CLI entry point
+│   ├── models.py           # FastGRU, PoseGRU, DualStreamEncoder, SimCLRProjectionWrapper
+│   ├── encoder.py          # build_encoder helper
+│   ├── faces_frames_dataset.py  # Dataset classes + SimCLRDataset
+│   ├── ssl.py              # SimCLR pre-training loop
+│   ├── supervised.py       # Supervised training + test evaluation
+│   ├── losses.py           # NTXentLoss
+│   ├── memory_bank.py      # MemoryBank
+│   ├── optimizer.py        # build_optimizer
+│   ├── transforms.py       # VideoSimCLRTransform
+│   ├── pose_transforms.py  # PoseSimCLRTransform
+│   └── utils.py            # Collate functions, EarlyStopping, seeds
+├── visualization/
+│   └── peek_faces.py
+├── scripts/
+│   ├── download-weights.py
+│   ├── label-videos.py
+│   ├── move-random-videos.py
+│   └── pip-uninstall.py
+├── sbatch/
+│   ├── preprocessing.sh    # Anvil job script
+│   └── training.sh
+└── utils/
+    └── timer.py
+```
+ 
+---
 
-You can find utility scripts in the `scripts/` directory. More info on the available scripts and how to use them can be found in the [scripts/README.md](./scripts/README.md) file.
+## References
 
-## Sources
-
-- [YuNet model from OpenCV](https://github.com/opencv/opencv_zoo/blob/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx)
-- [Ultralytics YOLO Pose docs](https://docs.ultralytics.com/tasks/pose/)
-- Karen Simonyan, Andrew Zisserman, __Two-Stream Convolutional Networks for Action Recognition in Videos__, [https://arxiv.org/pdf/1406.2199](https://arxiv.org/pdf/1406.2199), 2014.
-- Joe Yue-Hei Ng, Matthew Hausknecht, Sudheendra Vijayanarasimhan, Rajat Monga, Oriol Vinyals, George Toderici, __Beyond Short Snippets: Deep Networks for Video Classification__, [https://arxiv.org/pdf/1503.08909](https://arxiv.org/pdf/1503.08909), 2015.
-- Ting Chen, Simon Kornblith, Mohammad Norouzi, Geoffrey Hinton, __A Simple Framework for Contrastive Learning of Visual Representations__, [https://arxiv.org/pdf/2002.05709](https://arxiv.org/pdf/2002.05709), 2020.
+- Simonyan & Zisserman, [Two-Stream Convolutional Networks for Action Recognition in Videos](https://arxiv.org/pdf/1406.2199), NeurIPS 2014.
+- Ng et al., [Beyond Short Snippets: Deep Networks for Video Classification](https://arxiv.org/pdf/1503.08909), CVPR 2015.
+- Chen et al., [A Simple Framework for Contrastive Learning of Visual Representations](https://arxiv.org/pdf/2002.05709), ICML 2020.
+- [YuNet face detector — OpenCV Zoo](https://github.com/opencv/opencv_zoo/blob/main/models/face_detection_yunet/)
+- [Ultralytics YOLO Pose](https://docs.ultralytics.com/tasks/pose/)
