@@ -1,3 +1,5 @@
+"""Supervised fine-tuning and evaluation."""
+
 import argparse
 import csv
 from datetime import datetime
@@ -25,10 +27,8 @@ def train_supervised(
     weights_dir: Path,
     logs_dir: Path,
 ) -> None:
-    """
-    Main loop for supervised training and final test evaluation.
-    """
-    print(f"--- SUPERVISED TRAINING with {args.encoder} ---")
+    """Supervised training loop with validation-based early stopping and test evaluation."""
+    print(f"--- SUPERVISED TRAINING ({args.encoder}) ---")
 
     train_csv = csv_file.parent / "train.csv"
     val_csv = csv_file.parent / "val.csv"
@@ -41,20 +41,26 @@ def train_supervised(
     )
 
     aug_multiplier = getattr(args, "aug_multiplier", 1)
+
+    # Build datasets — keep a clean (no-augment) version for class-weight computation
+    train_ds_base = FacesFramesSupervisedDataset(train_csv, img_dir)
     train_ds = FacesFramesSupervisedDataset(
-        train_csv, img_dir, transform=train_transform, aug_multiplier=aug_multiplier
+        train_csv,
+        img_dir,
+        transform=train_transform,
+        aug_multiplier=aug_multiplier,
     )
     val_ds = FacesFramesSupervisedDataset(val_csv, img_dir)
     test_ds = FacesFramesSupervisedDataset(test_csv, img_dir)
 
-    n_orig = len(train_ds) // aug_multiplier
+    n_orig = len(train_ds_base)
     print(
-        f"Train: {len(train_ds)} ({n_orig} original × {aug_multiplier})",
-        f"| Val: {len(val_ds)} | Test: {len(test_ds)}",
+        f"Train: {len(train_ds)} ({n_orig} × {aug_multiplier}) | "
+        f"Val: {len(val_ds)} | Test: {len(test_ds)}"
     )
 
     def _make_loader(
-        dataset: FacesFramesSupervisedDataset, shuffle: bool
+        dataset: FacesFramesSupervisedDataset, *, shuffle: bool
     ) -> DataLoader:
         return DataLoader(
             dataset,
@@ -81,27 +87,33 @@ def train_supervised(
             )
             print(f"Loaded SSL weights from {ssl_path}")
         else:
-            print(f"Warning: SSL weights not found at {ssl_path}")
+            print(f"[warn] SSL weights not found at {ssl_path} — training from scratch")
 
     optimizer = build_optimizer(model, args)
 
-    original_ds = FacesFramesSupervisedDataset(train_csv, img_dir)
-    class_counts = np.bincount([int(label.item()) for _, _, label in original_ds])
+    # Inverse-frequency class weights computed from the clean training set
+    class_counts = np.bincount(
+        [int(label.item()) for _, _, label in train_ds_base],
+        minlength=3,
+    )
     weights = 1.0 / torch.tensor(class_counts, dtype=torch.float)
     weights /= weights.sum()
     criterion = nn.CrossEntropyLoss(weight=weights.to(device))
 
-    early_stopping = EarlyStopping(patience=7, min_delta=0.0001)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=args.epochs, eta_min=1e-6
+    )
+    early_stopping = EarlyStopping(patience=7, min_delta=1e-4)
 
     best_val_acc = 0.0
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    best_model_path = weights_dir / f"best_{args.encoder}_supervised_{timestamp}.pt"
+    best_model_path = weights_dir / f"best_{args.encoder}_{timestamp}.pt"
 
     logs_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = logs_dir / f"supervised_{args.encoder}_log.csv"
+    csv_path = logs_dir / f"supervised_{args.encoder}.csv"
 
-    with open(csv_path, mode="w", newline="") as csv_fh:
-        writer = csv.writer(csv_fh)
+    with open(csv_path, mode="w", newline="") as log_fh:
+        writer = csv.writer(log_fh)
         writer.writerow(
             [
                 "epoch",
@@ -117,11 +129,11 @@ def train_supervised(
 
         try:
             for epoch in range(args.epochs):
-                # =================== TRAINING ===================
+                # ── Training ──────────────────────────────────────────────
                 model.train()
                 train_loss = 0.0
                 correct = total = 0
-                pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1} train")
+                pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{args.epochs} train")
 
                 for faces, pose, labels, lengths in pbar:
                     faces = faces.to(device, non_blocking=True)
@@ -132,6 +144,7 @@ def train_supervised(
                     logits = model(faces, pose, lengths)
                     loss = criterion(logits, labels)
                     loss.backward()
+                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                     optimizer.step()
 
                     train_loss += loss.item()
@@ -140,13 +153,13 @@ def train_supervised(
                     total += labels.size(0)
                     pbar.set_postfix(
                         loss=f"{loss.item():.4f}",
-                        acc=f"{correct / total:.4f}" if total else "–",
+                        acc=f"{correct / total:.4f}" if total else "—",
                     )
 
                 train_acc = correct / total
                 avg_train_loss = train_loss / len(train_loader)
 
-                # =================== VALIDATION =================
+                # ── Validation ────────────────────────────────────────────
                 model.eval()
                 val_loss = 0.0
                 all_preds: list[int] = []
@@ -159,21 +172,20 @@ def train_supervised(
                         labels = labels.to(device)
                         logits = model(faces, pose, lengths)
                         val_loss += criterion(logits, labels).item()
-                        all_preds.extend(logits.argmax(dim=1).cpu().numpy())
-                        all_labels.extend(labels.cpu().numpy())
+                        all_preds.extend(logits.argmax(dim=1).cpu().tolist())
+                        all_labels.extend(labels.cpu().tolist())
 
                 avg_val_loss = val_loss / len(val_loader)
-                val_acc = np.mean(np.array(all_preds) == np.array(all_labels))
-                val_f1 = f1_score(all_labels, all_preds, average="macro")
+                val_acc = float(np.mean(np.array(all_preds) == np.array(all_labels)))
+                val_f1 = float(f1_score(all_labels, all_preds, average="macro"))
                 val_cm = confusion_matrix(all_labels, all_preds)
-                val_cm_str = ";".join([",".join(map(str, r)) for r in val_cm])
+                val_cm_str = ";".join(",".join(map(str, r)) for r in val_cm)
                 current_lr = optimizer.param_groups[0]["lr"]
 
                 print(
-                    f"Epoch {epoch + 1}/{args.epochs}  "
-                    f"train_loss={avg_train_loss:.4f}  train_acc={train_acc:.4f}  "
+                    f"  train_loss={avg_train_loss:.4f}  train_acc={train_acc:.4f}  "
                     f"val_loss={avg_val_loss:.4f}  val_acc={val_acc:.4f}  "
-                    f"val_f1={val_f1:.4f}  lr={current_lr:.6f}"
+                    f"val_f1={val_f1:.4f}  lr={current_lr:.2e}"
                 )
 
                 writer.writerow(
@@ -188,7 +200,9 @@ def train_supervised(
                         f"{current_lr:.8f}",
                     ]
                 )
-                csv_fh.flush()
+                log_fh.flush()
+
+                scheduler.step()
 
                 if val_acc > best_val_acc:
                     best_val_acc = val_acc
@@ -202,7 +216,7 @@ def train_supervised(
         finally:
             print(f"\n✓ Training log → {csv_path}")
 
-    # =================== TEST ===================================
+    # ── Test evaluation ───────────────────────────────────────────────────
     print("\n--- FINAL TEST EVALUATION ---")
     model.load_state_dict(
         torch.load(best_model_path, map_location=device, weights_only=True)
@@ -213,21 +227,16 @@ def train_supervised(
     test_labels_list: list[int] = []
 
     with torch.no_grad():
-        pbar = tqdm(test_loader, desc="Test evaluation")
-        for faces, pose, labels, lengths in pbar:
+        for faces, pose, labels, lengths in tqdm(test_loader, desc="Testing"):
             faces = faces.to(device)
             pose = pose.to(device)
             labels = labels.to(device)
             preds = model(faces, pose, lengths).argmax(dim=1)
-            test_preds.extend(preds.cpu().numpy())
-            test_labels_list.extend(labels.cpu().numpy())
+            test_preds.extend(preds.cpu().tolist())
+            test_labels_list.extend(labels.cpu().tolist())
 
-            del faces, pose, labels, preds
-            if device.type == "cuda":
-                torch.cuda.empty_cache()
-
-    test_acc = np.mean(np.array(test_preds) == np.array(test_labels_list))
-    test_f1 = f1_score(test_labels_list, test_preds, average="macro")
+    test_acc = float(np.mean(np.array(test_preds) == np.array(test_labels_list)))
+    test_f1 = float(f1_score(test_labels_list, test_preds, average="macro"))
     test_cm = confusion_matrix(test_labels_list, test_preds)
 
     print(f"Test Accuracy : {test_acc:.4f}")
@@ -235,9 +244,11 @@ def train_supervised(
     print(f"Confusion Matrix:\n{test_cm}")
 
     results_path = logs_dir / f"test_results_{args.encoder}.txt"
-    with open(results_path, "w") as f:
-        f.write(f"Model: {args.encoder}\n")
-        f.write(f"Test Accuracy : {test_acc:.4f}\n")
-        f.write(f"Test F1-macro : {test_f1:.4f}\n")
-        f.write(f"Confusion Matrix:\n{test_cm}\n")
+    results_path.write_text(
+        f"Model      : {args.encoder}\n"
+        f"Checkpoint : {best_model_path}\n"
+        f"Accuracy   : {test_acc:.4f}\n"
+        f"F1-macro   : {test_f1:.4f}\n"
+        f"Confusion Matrix:\n{test_cm}\n"
+    )
     print(f"Test results → {results_path}")
