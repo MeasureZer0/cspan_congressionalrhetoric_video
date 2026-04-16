@@ -9,7 +9,6 @@ from .faces_frames_dataset import FacesFramesSupervisedDataset
 
 
 def set_seed(seed: int = 42) -> None:
-    """Sets the seed for reproducibility across random, numpy, and torch."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -19,30 +18,19 @@ def set_seed(seed: int = 42) -> None:
 
 def default_paths() -> tuple[Path, Path, Path, Path]:
     """Return default (img_dir, csv_file, weights_dir, logs_dir) paths."""
-    script_dir = Path(__file__).resolve().parent
-    project_root = script_dir.parent
+    project_root = Path(__file__).resolve().parent.parent
     data_dir = project_root / "data"
-    img_dir = data_dir / "processed/frame_skip_30"
-    csv_file = data_dir / "labels.csv"
-    weights_dir = data_dir / "weights"
-    logs_dir = project_root / "logs"
-    return img_dir, csv_file, weights_dir, logs_dir
+    return (
+        data_dir / "processed/frame_skip_30",
+        data_dir / "labels.csv",
+        data_dir / "weights",
+        project_root / "logs",
+    )
 
 
 def ssl_collate_fn(
     batch: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Collate for SimCLR SSL.
-
-    Each item in batch: (face_v1, face_v2, pose_v1, pose_v2)
-
-    Returns
-    -------
-    face_v1, face_v2 : padded  [B, T, 3, H, W]
-    pose_v1, pose_v2 : padded  [B, T, 17, 3]
-    lengths          : [B]  – based on face_v1 sequence lengths
-    """
     fv1_list = [item[0] for item in batch]
     fv2_list = [item[1] for item in batch]
     pv1_list = [item[2] for item in batch]
@@ -61,11 +49,6 @@ def ssl_collate_fn(
 def supervised_collate_fn(
     batch: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Collate for supervised training.
-
-    Each item in batch: (faces, pose, label)
-    """
     faces_list = [item[0] for item in batch]
     pose_list = [item[1] for item in batch]
     labels = torch.stack([item[2] for item in batch])
@@ -78,8 +61,6 @@ def supervised_collate_fn(
 
 
 class EarlyStopping:
-    """Stop training when validation loss stops improving."""
-
     def __init__(
         self,
         patience: int = 5,
@@ -114,9 +95,6 @@ def stratified_split(
     dataset: FacesFramesSupervisedDataset,
     fractions: tuple[float, float, float],
 ) -> tuple[list[int], list[int], list[int]]:
-    """
-    Stratified train / val / test split.
-    """
     class_indices: list[list[int]] = [[], [], []]
     for i in range(len(dataset)):
         _, _, label = dataset[i]

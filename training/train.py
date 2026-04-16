@@ -6,12 +6,6 @@ from .ssl import train_ssl
 from .supervised import train_supervised
 from .utils import default_paths, set_seed
 
-"""
-Training script for self-supervised (SimCLR) and supervised learning
-on face tensor sequences extracted from videos.
-"""
-
-
 if __name__ == "__main__":
     set_seed(37)
     parser = argparse.ArgumentParser()
@@ -34,12 +28,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--freeze-backbone", action="store_true", help="Freeze ResNet backbone"
     )
-    parser.add_argument(
-        "--aug-multiplier",
-        type=int,
-        default=3,
-        help="How many augmented copies of each train sample per epoch",
-    )
+    parser.add_argument("--aug-multiplier", type=int, default=3)
 
     args = parser.parse_args()
 
