@@ -16,11 +16,7 @@ This repository contains the code and resources for the video team working on th
 - [Training](#training)
 - [Utility Scripts](#utility-scripts)
 - [Project Layout](#project-layout)
-- [Inference](#inference)
-- [Performance Tips](#performance-tips)
-- [Troubleshooting](#troubleshooting)
-- [Requirements](#requirements)
-- [Known Limitations & Future Work](#known-limitations--future-work)
+- [Training Results](#training-results)
 - [References](#references)
 
 ---
@@ -246,7 +242,8 @@ See [`scripts/README.md`](scripts/README.md) for full documentation.
 ├── logs/                   # Training logs
 └── utils/
     └── timer.py 
-```---
+```
+---
 
 ## References
 
