@@ -119,7 +119,8 @@ def train_ssl(
         avg_loss = epoch_loss / num_batches
         current_lr = optimizer.param_groups[0]["lr"]
         print(
-            f"Epoch {epoch + 1}/{args.epochs} – Avg Loss: {avg_loss:.4f}, LR: {current_lr:.6f}"
+            f"Epoch {epoch + 1}/{args.epochs} - Avg Loss: {avg_loss:.4f}, \
+             LR: {current_lr:.6f}"
         )
         scheduler.step()
 
