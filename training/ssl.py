@@ -24,16 +24,6 @@ def train_ssl(
     img_dir: Path,
     weights_dir: Path,
 ) -> None:
-    """
-    SimCLR pre-training loop.
-
-    Each batch contains two independently-augmented views of every sample:
-      face_v1, face_v2  – from VideoSimCLRTransform
-      pose_v1, pose_v2  – from PoseSimCLRTransform
-
-    The encoder maps each view to an embedding, the projection head maps to
-    the contrastive space, and NTXentLoss pulls same-sample embeddings together.
-    """
     print(f"--- STARTING SSL PRETRAINING (SimCLR) with {args.encoder} ---")
 
     base_ds: FacesFramesSSLDataset | Subset = FacesFramesSSLDataset(img_dir)
@@ -43,10 +33,9 @@ def train_ssl(
         base_ds = Subset(base_ds, indices)
         print(f"Using subset of {args.subset} samples")
 
-    face_transform = VideoSimCLRTransform(size=128)
-    pose_transform = PoseSimCLRTransform()
-
-    ssl_ds = SimCLRDataset(base_ds, face_transform, pose_transform)
+    ssl_ds = SimCLRDataset(
+        base_ds, VideoSimCLRTransform(size=128), PoseSimCLRTransform()
+    )
 
     loader = DataLoader(
         ssl_ds,
@@ -59,12 +48,10 @@ def train_ssl(
     )
 
     encoder, encoder_dim = build_encoder(args, device)
-    projection_dim = 256
 
     if args.encoder == "fast_gru":
         for name, param in encoder.backbone.named_parameters():
             param.requires_grad = not ("layer1" in name or "layer2" in name)
-
     elif args.encoder == "dual_stream":
         for name, param in encoder.face_encoder.backbone.named_parameters():
             param.requires_grad = not ("layer1" in name or "layer2" in name)
@@ -72,7 +59,7 @@ def train_ssl(
     model = SimCLRProjectionWrapper(
         encoder,
         encoder_output_dim=encoder_dim,
-        projection_dim=projection_dim,
+        projection_dim=256,
     ).to(device)
 
     param_groups: list[dict] = []
@@ -83,7 +70,6 @@ def train_ssl(
             {"params": encoder.gru.parameters(), "lr": 1e-4},
             {"params": encoder.attention.parameters(), "lr": 1e-4},
         ]
-
     elif args.encoder == "dual_stream":
         param_groups += [
             {"params": encoder.face_encoder.backbone.parameters(), "lr": 1e-5},
@@ -133,15 +119,14 @@ def train_ssl(
         avg_loss = epoch_loss / num_batches
         current_lr = optimizer.param_groups[0]["lr"]
         print(
-            f"Epoch {epoch + 1}/{args.epochs} – "
-            f"Avg Loss: {avg_loss:.4f}, LR: {current_lr:.6f}"
+            f"Epoch {epoch + 1}/{args.epochs} - Avg Loss: {avg_loss:.4f}, \
+             LR: {current_lr:.6f}"
         )
         scheduler.step()
 
     save_path = (
-        weights_dir / f"ssl_backbone_{args.encoder}"
-        f"_bs{args.batch_size}"
-        f"_t{args.temperature}.pt"
+        weights_dir
+        / f"ssl_backbone_{args.encoder}_bs{args.batch_size}_t{args.temperature}.pt"
     )
     torch.save(encoder.state_dict(), save_path)
     print(f"SSL backbone saved → {save_path}")

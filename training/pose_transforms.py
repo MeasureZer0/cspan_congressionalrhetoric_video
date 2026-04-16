@@ -2,7 +2,6 @@ import random
 
 import torch
 
-# left/right pairs for horizontal flip
 FLIP_PAIRS: list[tuple[int, int]] = [
     (1, 2),
     (3, 4),
@@ -16,26 +15,7 @@ FLIP_PAIRS: list[tuple[int, int]] = [
 
 
 class PoseSimCLRTransform:
-    """
-    Augmentation pipeline for pose landmark sequences.
-
-    Applied independently to generate the two SimCLR views.
-
-    Parameters
-    ----------
-    noise_std : float
-        Gaussian noise std added to landmark coordinates.
-    dropout_p : float
-        Probability of zeroing each keypoint.
-    scale_range : (float, float)
-        Uniform scale range applied around the frame centre.
-    flip_p : float
-        Probability of a left-right flip.
-    temporal_crop : float
-        Minimum fraction of the sequence to keep.
-    conf_threshold : float
-        Keypoints below this confidence are treated as invisible.
-    """
+    """Augmentation pipeline for pose landmark sequences."""
 
     def __init__(
         self,
@@ -57,33 +37,27 @@ class PoseSimCLRTransform:
         pose = pose.clone()
         T = pose.shape[0]
 
-        # Temporal crop
         min_t = max(1, int(T * self.temporal_crop))
         start = random.randint(0, max(0, T - min_t))
         pose = pose[start : start + min_t]
 
-        # Horizontal flip
         if random.random() < self.flip_p:
-            pose[:, :, 0] = 1.0 - pose[:, :, 0]  # flip x-coordinates
-            # Swap left/right pairs
+            pose[:, :, 0] = 1.0 - pose[:, :, 0]
             for l_idx, r_idx in FLIP_PAIRS:
                 pose[:, l_idx, :], pose[:, r_idx, :] = (
                     pose[:, r_idx, :].clone(),
                     pose[:, l_idx, :].clone(),
                 )
 
-        # Scale
         scale = random.uniform(*self.scale_range)
         pose[:, :, :2] = (pose[:, :, :2] - 0.5) * scale + 0.5
         pose[:, :, :2].clamp_(0.0, 1.0)
 
-        # Gaussian noise
-        visible = pose[:, :, 2] > self.conf_threshold  # [T, 17]
+        visible = pose[:, :, 2] > self.conf_threshold
         noise = torch.randn_like(pose[:, :, :2]) * self.noise_std
         pose[:, :, :2] += noise * visible.unsqueeze(-1).float()
         pose[:, :, :2].clamp_(0.0, 1.0)
 
-        # Random keypoint dropout
         drop = torch.rand(pose.shape[0], pose.shape[1]) < self.dropout_p
         pose[drop] = 0.0
 

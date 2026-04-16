@@ -14,14 +14,10 @@ LABEL_NAMES = {0: "negative", 1: "neutral", 2: "positive"}
 
 
 def _collate_fn(batch: list) -> tuple:
-    """
-    Pads sequences of different lengths to the longest one in the batch.
-    """
     faces_list = [item[0] for item in batch]
     pose_list = [item[1] for item in batch]
     stems = [item[2] for item in batch]
 
-    # Keep track of original lengths for RNN/Transformer processing
     lengths = torch.tensor([f.shape[0] for f in faces_list], dtype=torch.long)
 
     faces_pad = torch.nn.utils.rnn.pad_sequence(faces_list, batch_first=True)
@@ -93,41 +89,16 @@ def run_inference(
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Inference - save results to CSV")
+    p.add_argument("--model-path", type=Path, required=True)
     p.add_argument(
-        "--model-path", type=Path, required=True, help="Path to the .pt model weights"
+        "--encoder", type=str, required=True, choices=["fast_gru", "dual_stream"]
     )
-    p.add_argument(
-        "--encoder",
-        type=str,
-        required=True,
-        choices=["fast_gru", "dual_stream"],
-        help="Type of encoder architecture used",
-    )
-    p.add_argument(
-        "--csv-file",
-        type=Path,
-        required=True,
-        help="Input CSV containing video names/stems",
-    )
-    p.add_argument(
-        "--img-dir",
-        type=Path,
-        required=True,
-        help="Directory containing *_faces.pt and *_pose.pt tensors",
-    )
-    p.add_argument(
-        "--out-csv",
-        type=Path,
-        default=Path("inference_results.csv"),
-        help="Path where the output CSV will be saved",
-    )
+    p.add_argument("--csv-file", type=Path, required=True)
+    p.add_argument("--img-dir", type=Path, required=True)
+    p.add_argument("--out-csv", type=Path, default=Path("inference_results.csv"))
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--num-workers", type=int, default=4)
-    p.add_argument(
-        "--cpu",
-        action="store_true",
-        help="Force inference on CPU even if CUDA is available",
-    )
+    p.add_argument("--cpu", action="store_true", help="Force CPU inference")
     return p.parse_args()
 
 

@@ -16,6 +16,11 @@ This repository contains the code and resources for the video team working on th
 - [Training](#training)
 - [Utility Scripts](#utility-scripts)
 - [Project Layout](#project-layout)
+- [Inference](#inference)
+- [Performance Tips](#performance-tips)
+- [Troubleshooting](#troubleshooting)
+- [Requirements](#requirements)
+- [Known Limitations & Future Work](#known-limitations--future-work)
 - [References](#references)
 
 ---
@@ -166,6 +171,26 @@ options:
   --aug-multiplier AUG_MULTIPLIER
                         How many augmented copies of each train sample per epoch
 ```
+
+### Training Results
+
+**Configuration:**
+- Model: `DualStreamEncoder` (face + pose fusion)
+- Epochs: 30 | Batch size: 32 | Optimizer: Adam | Loss: CrossEntropyLoss
+- Augmentation: 3× multiplicator | Learning rate: 1e-4 (face), 1e-3 (classifier)
+
+**Performance Summary:**
+
+| Metric | Best Epoch | Best Value |
+|--------|-----------|-----------|
+| **Validation Accuracy** | 13 | **58.67%** |
+| **Validation F1-Macro** | 13 | **0.588** |
+| **Training Accuracy** | 30 | 61.97% |
+| **Training Loss (min)** | 30 | 0.829 |
+| **Validation Loss (min)** | 18 | 1.005 |
+
+---
+
 ## Utility Scripts
  
 See [`scripts/README.md`](scripts/README.md) for full documentation.
@@ -197,6 +222,7 @@ See [`scripts/README.md`](scripts/README.md) for full documentation.
 │   ├── faces_frames_dataset.py  # Dataset classes + SimCLRDataset
 │   ├── ssl.py              # SimCLR pre-training loop
 │   ├── supervised.py       # Supervised training + test evaluation
+│   ├── inferencer.py       # Inference script
 │   ├── losses.py           # NTXentLoss
 │   ├── memory_bank.py      # MemoryBank
 │   ├── optimizer.py        # build_optimizer
@@ -213,11 +239,14 @@ See [`scripts/README.md`](scripts/README.md) for full documentation.
 ├── sbatch/
 │   ├── preprocessing.sh    # Anvil job script
 │   └── training.sh
+├── data/
+│   ├── raw_videos/         # Input video files
+│   ├── processed/          # Face & pose tensors
+│   └── weights/            # Model checkpoints & pretrained backbones
+├── logs/                   # Training logs
 └── utils/
-    └── timer.py
-```
- 
----
+    └── timer.py 
+```---
 
 ## References
 

@@ -27,8 +27,6 @@ def train_supervised(
     weights_dir: Path,
     logs_dir: Path,
 ) -> None:
-    """Supervised training loop with validation-based
-    early stopping and test evaluation."""
     print(f"--- SUPERVISED TRAINING ({args.encoder}) ---")
 
     train_csv = csv_file.parent / "train.csv"
@@ -36,20 +34,13 @@ def train_supervised(
     test_csv = csv_file.parent / "test.csv"
 
     train_transform = VideoSimCLRTransform(
-        size=128,
-        jitter_params=(0.3, 0.3, 0.3, 0.05),
-        gray_p=0.1,
+        size=128, jitter_params=(0.3, 0.3, 0.3, 0.05), gray_p=0.1
     )
-
     aug_multiplier = getattr(args, "aug_multiplier", 1)
 
-    # Build datasets — keep a clean (no-augment) version for class-weight computation
     train_ds_base = FacesFramesSupervisedDataset(train_csv, img_dir)
     train_ds = FacesFramesSupervisedDataset(
-        train_csv,
-        img_dir,
-        transform=train_transform,
-        aug_multiplier=aug_multiplier,
+        train_csv, img_dir, transform=train_transform, aug_multiplier=aug_multiplier
     )
     val_ds = FacesFramesSupervisedDataset(val_csv, img_dir)
     test_ds = FacesFramesSupervisedDataset(test_csv, img_dir)
@@ -92,10 +83,8 @@ def train_supervised(
 
     optimizer = build_optimizer(model, args)
 
-    # Inverse-frequency class weights computed from the clean training set
     class_counts = np.bincount(
-        [int(label.item()) for _, _, label in train_ds_base],
-        minlength=3,
+        [int(label.item()) for _, _, label in train_ds_base], minlength=3
     )
     weights = 1.0 / torch.tensor(class_counts, dtype=torch.float)
     weights /= weights.sum()
@@ -130,7 +119,6 @@ def train_supervised(
 
         try:
             for epoch in range(args.epochs):
-                # ── Training ──────────────────────────────────────────────
                 model.train()
                 train_loss = 0.0
                 correct = total = 0
@@ -160,7 +148,6 @@ def train_supervised(
                 train_acc = correct / total
                 avg_train_loss = train_loss / len(train_loader)
 
-                # ── Validation ────────────────────────────────────────────
                 model.eval()
                 val_loss = 0.0
                 all_preds: list[int] = []
@@ -202,7 +189,6 @@ def train_supervised(
                     ]
                 )
                 log_fh.flush()
-
                 scheduler.step()
 
                 if val_acc > best_val_acc:
@@ -217,7 +203,6 @@ def train_supervised(
         finally:
             print(f"\n✓ Training log → {csv_path}")
 
-    # ── Test evaluation ───────────────────────────────────────────────────
     print("\n--- FINAL TEST EVALUATION ---")
     model.load_state_dict(
         torch.load(best_model_path, map_location=device, weights_only=True)
